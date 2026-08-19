@@ -42,6 +42,20 @@
     return `${d.getDate()}. ${months[d.getMonth()]} ${d.getFullYear()} (${days[d.getDay()]})`;
   }
 
+  function fmtDateTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function fmtDateOnly(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()}`;
+  }
+
   // ─── API ──────────────────────────────────────────────────────────────────
   async function api(method, url, body) {
     const opts = { method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' };
@@ -205,7 +219,7 @@
           <div class="section-title">Moja dostupnosť${locked ? ' (uzamknutá)' : ''}</div>
           ${!locked ? `<p class="text-muted" style="margin-bottom:10px">Klikni na deň keď <strong>NEMÔŽEŠ</strong> pracovať (červená). Ostatné dni = dostupný.</p>` : ''}
           ${calHtml}
-          ${d.submittedAt ? `<p class="text-muted" style="margin-top:8px">Naposledy odoslané: ${new Date(d.submittedAt).toLocaleString('sk-SK')}</p>` : ''}
+          ${d.submittedAt ? `<p class="text-muted" style="margin-top:8px">Naposledy odoslané: ${fmtDateTime(d.submittedAt)}</p>` : ''}
           ${!locked ? `
             <div class="actions">
               <button class="btn btn-primary" id="sub-btn">Odoslať dostupnosť</button>
@@ -625,6 +639,7 @@
       for (const [sid, cfg] of Object.entries(ov)) {
         const stn = S.localStations.find(s => s.id === sid);
         if (!stn) continue;
+        if (cfg.required === 0 && cfg._mergedInto) continue; // hide auto-generated hidden half, shown alongside primary row
         const reqLabel = cfg.required === 0 ? '<span class="badge badge-warning">Skryté/Zlúčené</span>'
           : `<span class="badge badge-info">${cfg.required} os.</span>`;
         const merged = cfg.mergedLabel ? `→ <em>${esc(cfg.mergedLabel)}</em>` : '';
@@ -638,6 +653,7 @@
     }
     const dayOpts = sortedOpen.map(d => `<option value="${esc(d)}">${fmtShort(d)}</option>`).join('');
     const stnOpts = S.localStations.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+    const stnOpts2 = `<option value="">— nespájať —</option>` + S.localStations.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
     return `
       ${rows ? `<table style="margin-bottom:12px;width:auto"><thead><tr><th>Deň</th><th>Stanovisko</th><th>Počet</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="text-muted" style="margin-bottom:10px">Žiadne výnimky.</p>'}
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
@@ -645,16 +661,17 @@
           <label>Deň</label><select id="ov-date" style="width:140px">${dayOpts}</select>
         </div>
         <div class="form-group" style="margin:0">
-          <label>Stanovisko</label><select id="ov-stn" style="width:140px">${stnOpts}</select>
+          <label>Ponechané stanovisko</label><select id="ov-stn" style="width:150px">${stnOpts}</select>
         </div>
         <div class="form-group" style="margin:0">
           <label>Počet ľudí</label><input type="number" id="ov-req" value="1" min="0" max="10" style="width:70px">
         </div>
         <div class="form-group" style="margin:0">
-          <label>Zlúčiť s (voliteľné)</label><input type="text" id="ov-label" placeholder="napr. Bumpers + Space Cars" style="width:200px">
+          <label>Zlúčiť so stanoviskom</label><select id="ov-merge" style="width:170px">${stnOpts2}</select>
         </div>
         <button class="btn btn-secondary btn-sm" id="ov-add" style="align-self:flex-end">+ Pridať výnimku</button>
-      </div>`;
+      </div>
+      <p class="text-muted" style="margin-top:8px;font-size:.8rem">Ak vyberieš "Zlúčiť so stanoviskom", ono sa v tento deň v rozpise skryje a jeho brigádnici sa spočítajú do ponechaného stanoviska.</p>`;
   }
 
   function attachSettings() {
@@ -784,7 +801,10 @@
         btn.addEventListener('click', () => {
           const { date, sid } = btn.dataset;
           if (S.stationOverrides[date]) {
+            const cfg = S.stationOverrides[date][sid];
             delete S.stationOverrides[date][sid];
+            // also remove the auto-hidden merge partner, if this was a merge primary
+            if (cfg?.mergeWith) delete S.stationOverrides[date][cfg.mergeWith];
             if (!Object.keys(S.stationOverrides[date]).length) delete S.stationOverrides[date];
           }
           refreshOverridesCard();
@@ -794,10 +814,20 @@
         const date = document.getElementById('ov-date')?.value;
         const sid  = document.getElementById('ov-stn')?.value;
         const req  = Number(document.getElementById('ov-req')?.value ?? 1);
-        const lbl  = document.getElementById('ov-label')?.value?.trim() || '';
+        const mergeSid = document.getElementById('ov-merge')?.value || '';
         if (!date || !sid) return;
+        if (mergeSid && mergeSid === sid) { alert('Nemôžeš zlúčiť stanovisko samo so sebou.'); return; }
+        let lbl = '';
+        if (mergeSid) {
+          const primary = S.localStations.find(s => s.id === sid);
+          const secondary = S.localStations.find(s => s.id === mergeSid);
+          lbl = `${primary?.name || ''} + ${secondary?.name || ''}`;
+        }
         if (!S.stationOverrides[date]) S.stationOverrides[date] = {};
-        S.stationOverrides[date][sid] = { required: req, mergedLabel: lbl };
+        S.stationOverrides[date][sid] = { required: req, mergedLabel: lbl, mergeWith: mergeSid || null };
+        if (mergeSid) {
+          S.stationOverrides[date][mergeSid] = { required: 0, mergedLabel: '', _mergedInto: sid };
+        }
         refreshOverridesCard();
       });
     }
@@ -878,7 +908,7 @@
     const submitted = workers.filter(w => w.submitted).length;
     const rows = workers.map(w => {
       const badge = w.submitted
-        ? `<span class="badge badge-success">✓ ${new Date(w.submittedAt).toLocaleDateString('sk-SK')}</span>`
+        ? `<span class="badge badge-success">✓ ${fmtDateOnly(w.submittedAt)}</span>`
         : `<span class="badge badge-warning">Neodoslané</span>`;
       const days = (w.unavailableDays||[]).map(d =>
         `<span style="background:#fadbd8;color:#922b21;border-radius:10px;padding:1px 7px;font-size:.75rem;margin:2px;display:inline-block">${fmtShort(d)}</span>`
@@ -963,6 +993,9 @@
           return `<td class="sched-cell" style="background:#f5f5f5;color:#aaa;font-size:.8rem;text-align:center">—</td>`;
         }
         const stationLabel = info?.stationName || st.name;
+        const labelHtml = stationLabel !== st.name
+          ? `<div style="font-size:.72rem;font-weight:700;color:var(--orange-dark);margin-bottom:3px">${esc(stationLabel)}</div>`
+          : '';
         const wids = dayEdits[st.id] || [];
         const chips = wids.map(wid => {
           const w = (d.workers||[]).find(x => x.id === wid);
@@ -971,8 +1004,9 @@
           return `<span class="worker-chip${unavail ? ' worker-chip-warn' : ''}"${unavail ? ` title="⚠ ${esc(name)} nahlásil(a) tento deň ako nedostupný"` : ''}>${unavail ? '⚠ ' : ''}${esc(name)}<span class="chip-x" data-date="${date}" data-st="${esc(st.id)}" data-wid="${esc(wid)}">×</span></span>`;
         }).join('');
 
+        const mergeIds = new Set([st.id, ...(info?.mergeWith ? [info.mergeWith] : [])]);
         const addable = (d.workers||[]).filter(w =>
-          (w.allowedStations||[]).includes(st.id) && !assignedToday.has(w.id)
+          (w.allowedStations||[]).some(sid => mergeIds.has(sid)) && !assignedToday.has(w.id)
         );
         const addSel = addable.length
           ? `<div class="add-worker-row">
@@ -982,7 +1016,7 @@
               </select>
             </div>` : '';
 
-        return `<td class="sched-cell">${chips}${addSel}</td>`;
+        return `<td class="sched-cell">${labelHtml}${chips}${addSel}</td>`;
       }).join('');
 
       const free = (swnDay._free||[]);
@@ -1137,10 +1171,10 @@
       const acts = r.status === 'pending'
         ? `<button class="btn btn-success btn-sm ap-btn" data-id="${esc(r.id)}">Schváliť</button>
            <button class="btn btn-danger btn-sm rj-btn" data-id="${esc(r.id)}" style="margin-left:4px">Zamietnuť</button>`
-        : `<span class="text-muted">${r.resolvedAt ? new Date(r.resolvedAt).toLocaleDateString('sk-SK') : ''}</span>`;
+        : `<span class="text-muted">${r.resolvedAt ? fmtDateOnly(r.resolvedAt) : ''}</span>`;
       return `<tr>
         <td><strong>${esc(r.workerName)}</strong></td>
-        <td>${new Date(r.requestedAt).toLocaleDateString('sk-SK')}</td>
+        <td>${fmtDateOnly(r.requestedAt)}</td>
         <td>${(r.days||[]).map(d => fmtShort(d)).join(', ') || '—'}</td>
         <td>${esc(r.reason)}</td>
         <td>${badge}</td>
