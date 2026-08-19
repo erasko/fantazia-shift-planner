@@ -239,6 +239,11 @@ tr:hover td { background: #fafafa; }
 }
 .chip-x:hover { opacity: 1; }
 
+.worker-chip-warn {
+  background: var(--red);
+  border: 1px solid #a92e21;
+}
+
 .free-chip {
   display: inline-block;
   background: #e8f5e9;

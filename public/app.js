@@ -960,8 +960,10 @@
         const stationLabel = info?.stationName || st.name;
         const wids = dayEdits[st.id] || [];
         const chips = wids.map(wid => {
+          const w = (d.workers||[]).find(x => x.id === wid);
           const name = workerMap.get(wid) || wid;
-          return `<span class="worker-chip">${esc(name)}<span class="chip-x" data-date="${date}" data-st="${esc(st.id)}" data-wid="${esc(wid)}">×</span></span>`;
+          const unavail = (w?.unavailableDays||[]).includes(date);
+          return `<span class="worker-chip${unavail ? ' worker-chip-warn' : ''}"${unavail ? ` title="⚠ ${esc(name)} nahlásil(a) tento deň ako nedostupný"` : ''}>${unavail ? '⚠ ' : ''}${esc(name)}<span class="chip-x" data-date="${date}" data-st="${esc(st.id)}" data-wid="${esc(wid)}">×</span></span>`;
         }).join('');
 
         const addable = (d.workers||[]).filter(w =>
@@ -971,7 +973,7 @@
           ? `<div class="add-worker-row">
               <select class="add-w-sel" data-date="${date}" data-st="${esc(st.id)}" style="width:auto;padding:4px 6px;font-size:.78rem">
                 <option value="">+ Pridať...</option>
-                ${addable.map(w => `<option value="${esc(w.id)}">${esc(w.name)}</option>`).join('')}
+                ${addable.map(w => `<option value="${esc(w.id)}"${(w.unavailableDays||[]).includes(date) ? ' data-unavail="1"' : ''}>${(w.unavailableDays||[]).includes(date) ? '⚠ ' : ''}${esc(w.name)}${(w.unavailableDays||[]).includes(date) ? ' (nedostupný)' : ''}</option>`).join('')}
               </select>
             </div>` : '';
 
@@ -1033,6 +1035,14 @@
     document.querySelectorAll('.add-w-sel').forEach(sel => {
       sel.addEventListener('change', () => {
         if (!sel.value) return;
+        const opt = sel.options[sel.selectedIndex];
+        if (opt?.dataset.unavail) {
+          const name = opt.textContent.replace('⚠ ', '').replace(' (nedostupný)', '');
+          if (!confirm(`⚠ ${name} nahlásil(a) tento deň ako nedostupný. Naozaj ho/ju chceš pridať do rozpisu?`)) {
+            sel.value = '';
+            return;
+          }
+        }
         const { date, st } = sel.dataset;
         if (!S.schedEdits[date]) S.schedEdits[date] = {};
         if (!S.schedEdits[date][st]) S.schedEdits[date][st] = [...(S.data.scheduleWithNames?.[date]?.[st]?.workerIds||[])];
