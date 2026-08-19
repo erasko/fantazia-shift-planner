@@ -537,7 +537,7 @@
         <td><input type="text" class="w-name" data-i="${i}" value="${esc(w.name)}" placeholder="Meno"></td>
         <td><div class="stn-checks">${checks || '<span class="text-muted">Najprv pridaj stanoviská</span>'}</div></td>
         <td><input type="password" class="w-pwd" data-i="${i}" placeholder="Nové heslo">
-          ${w.hasPassword?'<br><span class="badge badge-info" style="margin-top:3px">Má heslo</span>':''}</td>
+          ${w.hasPassword?`<br><span class="badge badge-info" style="margin-top:3px">Má heslo</span> <label style="font-size:.72rem;cursor:pointer"><input type="checkbox" class="w-pwd-clear" data-i="${i}"> zrušiť</label>`:''}</td>
         <td style="white-space:nowrap">${link} <button class="btn btn-danger btn-sm w-rm" data-i="${i}">×</button></td>
       </tr>`;
     }).join('');
@@ -547,7 +547,7 @@
       return `<tr>
         <td><input type="text" class="op-name" data-i="${i}" value="${esc(o.name)}" placeholder="Meno prevádzku"></td>
         <td><input type="password" class="op-pwd" data-i="${i}" placeholder="Nové heslo">
-          ${o.hasPassword?'<br><span class="badge badge-info" style="margin-top:3px">Má heslo</span>':''}</td>
+          ${o.hasPassword?`<br><span class="badge badge-info" style="margin-top:3px">Má heslo</span> <label style="font-size:.72rem;cursor:pointer"><input type="checkbox" class="op-pwd-clear" data-i="${i}"> zrušiť</label>`:''}</td>
         <td style="white-space:nowrap">${link} <button class="btn btn-danger btn-sm op-rm" data-i="${i}">×</button></td>
       </tr>`;
     }).join('');
@@ -755,7 +755,7 @@
           <td><input type="text" class="w-name" data-i="${i}" value="${esc(w.name)}" placeholder="Meno"></td>
           <td><div class="stn-checks">${checks||'<span class="text-muted">Pridaj stanoviská</span>'}</div></td>
           <td><input type="password" class="w-pwd" data-i="${i}" placeholder="Nové heslo">
-            ${w.hasPassword?'<br><span class="badge badge-info" style="margin-top:3px">Má heslo</span>':''}</td>
+            ${w.hasPassword?`<br><span class="badge badge-info" style="margin-top:3px">Má heslo</span> <label style="font-size:.72rem;cursor:pointer"><input type="checkbox" class="w-pwd-clear" data-i="${i}"> zrušiť</label>`:''}</td>
           <td style="white-space:nowrap">${link} <button class="btn btn-danger btn-sm w-rm" data-i="${i}">×</button></td>
         </tr>`;
       }).join('');
@@ -780,7 +780,7 @@
         return `<tr>
           <td><input type="text" class="op-name" data-i="${i}" value="${esc(o.name)}" placeholder="Meno prevádzku"></td>
           <td><input type="password" class="op-pwd" data-i="${i}" placeholder="Nové heslo">
-            ${o.hasPassword?'<br><span class="badge badge-info" style="margin-top:3px">Má heslo</span>':''}</td>
+            ${o.hasPassword?`<br><span class="badge badge-info" style="margin-top:3px">Má heslo</span> <label style="font-size:.72rem;cursor:pointer"><input type="checkbox" class="op-pwd-clear" data-i="${i}"> zrušiť</label>`:''}</td>
           <td style="white-space:nowrap">${link} <button class="btn btn-danger btn-sm op-rm" data-i="${i}">×</button></td>
         </tr>`;
       }).join('');
@@ -855,17 +855,25 @@
 
       const workers = S.localWorkers.map((w, i) => {
         const name = document.querySelector(`.w-name[data-i="${i}"]`)?.value?.trim() || '';
-        const password = document.querySelector(`.w-pwd[data-i="${i}"]`)?.value || '';
+        const pwdTyped = document.querySelector(`.w-pwd[data-i="${i}"]`)?.value || '';
+        const clearPwd = document.querySelector(`.w-pwd-clear[data-i="${i}"]`)?.checked;
         const allowedStations = [];
         document.querySelectorAll(`.w-st[data-wi="${i}"]`).forEach(cb => { if (cb.checked) allowedStations.push(cb.dataset.sid); });
-        return { id: w.id, name, password, allowedStations };
+        const obj = { id: w.id, name, allowedStations };
+        if (clearPwd) obj.password = null;
+        else if (pwdTyped) obj.password = pwdTyped;
+        return obj;
       }).filter(w => w.name);
 
-      const operators = S.localOperators.map((o, i) => ({
-        id: o.id,
-        name:     document.querySelector(`.op-name[data-i="${i}"]`)?.value?.trim() || '',
-        password: document.querySelector(`.op-pwd[data-i="${i}"]`)?.value || '',
-      })).filter(o => o.name);
+      const operators = S.localOperators.map((o, i) => {
+        const name = document.querySelector(`.op-name[data-i="${i}"]`)?.value?.trim() || '';
+        const pwdTyped = document.querySelector(`.op-pwd[data-i="${i}"]`)?.value || '';
+        const clearPwd = document.querySelector(`.op-pwd-clear[data-i="${i}"]`)?.checked;
+        const obj = { id: o.id, name };
+        if (clearPwd) obj.password = null;
+        else if (pwdTyped) obj.password = pwdTyped;
+        return obj;
+      }).filter(o => o.name);
 
       const daySettings = {};
       document.querySelectorAll('.dh-open').forEach(inp => {
@@ -1238,6 +1246,7 @@
           <a href="/api/export/schedule.xlsx" class="btn btn-primary">⬇ Rozpis (Excel .xlsx)</a>
           <a href="/api/export/schedule.csv" class="btn btn-secondary">⬇ Rozpis (.csv)</a>
           <a href="/api/export/submissions.csv" class="btn btn-secondary">⬇ Odpovede brigádnikov (.csv)</a>
+          <a href="/api/export/hours.csv" class="btn btn-secondary">⬇ Odpracované hodiny (.csv)</a>
           <a href="/api/export/backup.json" class="btn btn-secondary">⬇ Záloha všetkých dát (.json)</a>
         </div>
       </div>`;
@@ -1356,10 +1365,11 @@
     }
 
     const counts = computeShiftCounts(d);
+    const wh = d.workerHours || {};
     const countRows = [...counts.entries()]
-      .map(([wid, c]) => ({ name: (workers.find(w => w.id === wid) || {}).name || wid, count: c }))
-      .sort((a, b) => b.count - a.count)
-      .map(r => `<tr><td>${esc(r.name)}</td><td><span class="badge badge-info">${r.count} zmien</span></td></tr>`)
+      .map(([wid, c]) => ({ name: (workers.find(w => w.id === wid) || {}).name || wid, count: c, hours: wh[wid]?.hours || 0 }))
+      .sort((a, b) => b.hours - a.hours)
+      .map(r => `<tr><td>${esc(r.name)}</td><td><span class="badge badge-info">${r.count} zmien</span></td><td><span class="badge badge-success">${r.hours.toFixed(1)} h</span></td></tr>`)
       .join('');
 
     const dateOpts = openDays.map(dt => `<option value="${esc(dt)}">${fmtShort(dt)}</option>`).join('');
@@ -1380,9 +1390,9 @@
         </div>
         <div id="qa-result" style="margin-top:6px"></div>
 
-        <div class="section-title" style="margin-top:18px">Počet zmien v mesiaci</div>
+        <div class="section-title" style="margin-top:18px">Zmeny a odpracované hodiny v mesiaci</div>
         <div style="overflow-x:auto">
-          <table style="width:auto"><thead><tr><th>Brigádnik</th><th>Zmeny</th></tr></thead><tbody>${countRows}</tbody></table>
+          <table style="width:auto"><thead><tr><th>Brigádnik</th><th>Zmeny</th><th>Hodiny</th></tr></thead><tbody>${countRows}</tbody></table>
         </div>
       </div>`;
   }

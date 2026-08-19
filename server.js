@@ -177,6 +177,16 @@ function isAvailabilityLocked(store) {
   return new Date() > new Date(store.availabilityDeadline);
 }
 
+function getShiftHours(store, date, station) {
+  const ds = store.daySettings?.[date] || {};
+  const opensAt = station?.opensAt || ds.opensAt || store.defaultOpensAt || '10:00';
+  const closesAt = station?.closesAt || ds.closesAt || store.defaultClosesAt || '19:00';
+  const [oh, om] = opensAt.split(':').map(Number);
+  const [ch, cm] = closesAt.split(':').map(Number);
+  const mins = (ch * 60 + cm) - (oh * 60 + om);
+  return mins > 0 ? mins / 60 : 0;
+}
+
 function generateSchedule(store) {
   const latestSub = new Map();
   for (const sub of store.submissions) {
@@ -189,8 +199,8 @@ function generateSchedule(store) {
     unavailable.set(wid, new Set(sub.unavailableDays || []));
   }
 
-  const assignCount = new Map();
-  for (const w of store.workers) assignCount.set(w.id, 0);
+  const assignHours = new Map();
+  for (const w of store.workers) assignHours.set(w.id, 0);
 
   const groupFilter = (() => {
     if (!store.activeGroup) return null;
@@ -222,13 +232,14 @@ function generateSchedule(store) {
         return true;
       });
 
-      eligible.sort((a, b) => (assignCount.get(a.id) || 0) - (assignCount.get(b.id) || 0));
+      eligible.sort((a, b) => (assignHours.get(a.id) || 0) - (assignHours.get(b.id) || 0));
 
+      const shiftHours = getShiftHours(store, date, station);
       for (let i = 0; i < Math.min(needed, eligible.length); i++) {
         const w = eligible[i];
         assignments[date][station.id].push(w.id);
         assignedOnDay[date].add(w.id);
-        assignCount.set(w.id, (assignCount.get(w.id) || 0) + 1);
+        assignHours.set(w.id, (assignHours.get(w.id) || 0) + shiftHours);
       }
     }
   }
@@ -390,11 +401,45 @@ function adminView(store) {
       hasPassword: !!o.passwordHash,
     })),
     scheduleWithNames,
+    workerHours: Object.fromEntries([...computeWorkerHours(store)].map(([wid, v]) => [wid, v])),
     changeRequests: store.changeRequests || [],
   };
 }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
+
+function computeWorkerHours(store) {
+  const sched = effectiveSchedule(store);
+  const hours = new Map();
+  for (const w of store.workers) hours.set(w.id, { shifts: 0, hours: 0 });
+  for (const date of Object.keys(sched)) {
+    const dayOv = store.daySettings?.[date]?.stationOverrides || {};
+    for (const station of store.stations) {
+      const ov = dayOv[station.id];
+      const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
+      if (needed === 0) continue;
+      const wids = sched[date]?.[station.id] || [];
+      const shiftHours = getShiftHours(store, date, station);
+      for (const wid of wids) {
+        const entry = hours.get(wid) || { shifts: 0, hours: 0 };
+        entry.shifts += 1;
+        entry.hours += shiftHours;
+        hours.set(wid, entry);
+      }
+    }
+  }
+  return hours;
+}
+
+function exportHoursCSV(store) {
+  const hours = computeWorkerHours(store);
+  const lines = ['Meno,Počet zmien,Odpracované hodiny'];
+  for (const w of store.workers) {
+    const entry = hours.get(w.id) || { shifts: 0, hours: 0 };
+    lines.push([`"${w.name}"`, entry.shifts, entry.hours.toFixed(1)].join(','));
+  }
+  return lines.join('\n');
+}
 
 function exportSubmissionsCSV(store) {
   const latestSub = new Map();
@@ -930,7 +975,7 @@ async function handleRequest(req, res) {
             allowedStations: w.allowedStations || [],
           };
           if (w.password) updated.passwordHash = hashPassword(w.password);
-          if (w.password === '') updated.passwordHash = null;
+          else if (w.password === null) updated.passwordHash = null;
           return updated;
         });
       }
@@ -949,7 +994,7 @@ async function handleRequest(req, res) {
             passwordHash: ex.passwordHash || null,
           };
           if (o.password) updated.passwordHash = hashPassword(o.password);
-          if (o.password === '') updated.passwordHash = null;
+          else if (o.password === null) updated.passwordHash = null;
           return updated;
         });
       }
@@ -1042,6 +1087,13 @@ async function handleRequest(req, res) {
     const store = await getStore();
     res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="submissions.csv"' });
     return res.end('﻿' + exportSubmissionsCSV(store));
+  }
+
+  if (req.method === 'GET' && p === '/api/export/hours.csv') {
+    if (!requireAdmin(req, res)) return;
+    const store = await getStore();
+    res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="hodiny.csv"' });
+    return res.end('﻿' + exportHoursCSV(store));
   }
 
   if (req.method === 'GET' && p === '/api/export/schedule.csv') {
