@@ -1,0 +1,1133 @@
+import http from 'http';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import crypto from 'crypto';
+import pg from 'pg';
+import ExcelJS from 'exceljs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PORT = parseInt(process.env.PORT || '3000');
+const HOST = process.env.HOST || '0.0.0.0';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
+const AGENT_API_KEY = process.env.AGENT_API_KEY || null;
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const STORE_FILE = path.join(DATA_DIR, 'store.json');
+
+// ─── Postgres ─────────────────────────────────────────────────────────────────
+
+const pool = process.env.DATABASE_URL
+  ? new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+  : null;
+
+async function ensureTable() {
+  if (!pool) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_store (
+      id TEXT PRIMARY KEY DEFAULT 'main',
+      data JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+}
+
+// ─── Store ────────────────────────────────────────────────────────────────────
+
+function lastDayOfMonth(yearMonth) {
+  const [y, m] = yearMonth.split('-').map(Number);
+  return new Date(y, m, 0).getDate();
+}
+
+function defaultStore() {
+  const now = new Date();
+  const month = now.toISOString().slice(0, 7);
+  const last = lastDayOfMonth(month);
+  return {
+    month,
+    periodStart: `${month}-01`,
+    periodEnd: `${month}-${String(last).padStart(2, '0')}`,
+    availabilityDeadline: '',
+    defaultOpensAt: '10:00',
+    defaultClosesAt: '19:00',
+    openDays: [],
+    daySettings: {},
+    stations: [],
+    workers: [],
+    operators: [],
+    submissions: [],
+    manualAssignments: {},
+    schedule: {},
+    schedulePublished: false,
+    changeRequests: [],
+  };
+}
+
+let _store = null;
+
+async function loadStore() {
+  if (pool) {
+    const res = await pool.query("SELECT data FROM app_store WHERE id = 'main'");
+    if (res.rows.length) return { ...defaultStore(), ...res.rows[0].data };
+    return defaultStore();
+  }
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(STORE_FILE)) return defaultStore();
+  try {
+    return { ...defaultStore(), ...JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) };
+  } catch {
+    return defaultStore();
+  }
+}
+
+async function saveStore(store) {
+  if (pool) {
+    await pool.query(
+      `INSERT INTO app_store (id, data, updated_at) VALUES ('main', $1, NOW())
+       ON CONFLICT (id) DO UPDATE SET data = $1, updated_at = NOW()`,
+      [JSON.stringify(store)]
+    );
+    return;
+  }
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2));
+}
+
+async function getStore() {
+  if (!_store) _store = await loadStore();
+  return _store;
+}
+
+async function mutateStore(fn) {
+  const store = await getStore();
+  fn(store);
+  await saveStore(store);
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+function hashPassword(pwd) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(pwd, salt, 32).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(stored, pwd) {
+  if (!stored || !pwd) return false;
+  const [salt, hash] = stored.split(':');
+  if (!salt || !hash) return false;
+  try {
+    const attempt = crypto.scryptSync(pwd, salt, 32).toString('hex');
+    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(attempt, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+function generateToken() {
+  return crypto.randomBytes(24).toString('hex');
+}
+
+const sessions = new Map();
+const SESSION_TTL = 12 * 60 * 60 * 1000;
+
+function createSession() {
+  const token = generateToken();
+  sessions.set(token, { createdAt: Date.now() });
+  return token;
+}
+
+function getSession(token) {
+  if (!token) return null;
+  const s = sessions.get(token);
+  if (!s) return null;
+  if (Date.now() - s.createdAt > SESSION_TTL) {
+    sessions.delete(token);
+    return null;
+  }
+  return s;
+}
+
+function deleteSession(token) {
+  sessions.delete(token);
+}
+
+// ─── Rate Limiting ────────────────────────────────────────────────────────────
+
+const rateLimits = new Map();
+
+function checkRateLimit(key, max = 5, windowMs = 15 * 60 * 1000) {
+  const now = Date.now();
+  const entry = rateLimits.get(key) || { count: 0, firstAt: now };
+  if (now - entry.firstAt > windowMs) {
+    rateLimits.set(key, { count: 1, firstAt: now });
+    return true;
+  }
+  if (entry.count >= max) return false;
+  entry.count++;
+  rateLimits.set(key, entry);
+  return true;
+}
+
+// ─── Schedule Generation ──────────────────────────────────────────────────────
+
+function isAvailabilityLocked(store) {
+  if (!store.availabilityDeadline) return false;
+  return new Date() > new Date(store.availabilityDeadline);
+}
+
+function generateSchedule(store) {
+  const latestSub = new Map();
+  for (const sub of store.submissions) {
+    const ex = latestSub.get(sub.workerId);
+    if (!ex || sub.submittedAt > ex.submittedAt) latestSub.set(sub.workerId, sub);
+  }
+
+  const unavailable = new Map();
+  for (const [wid, sub] of latestSub) {
+    unavailable.set(wid, new Set(sub.unavailableDays || []));
+  }
+
+  const assignCount = new Map();
+  for (const w of store.workers) assignCount.set(w.id, 0);
+
+  const assignments = {};
+  const assignedOnDay = {};
+
+  for (const date of [...store.openDays].sort()) {
+    assignments[date] = {};
+    assignedOnDay[date] = new Set();
+
+    const dayOverrides = store.daySettings?.[date]?.stationOverrides || {};
+
+    for (const station of store.stations) {
+      assignments[date][station.id] = [];
+      const ov = dayOverrides[station.id];
+      const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
+      if (needed === 0) continue;
+
+      const eligible = store.workers.filter((w) => {
+        if (!(w.allowedStations || []).includes(station.id)) return false;
+        if ((unavailable.get(w.id) || new Set()).has(date)) return false;
+        if (assignedOnDay[date].has(w.id)) return false;
+        return true;
+      });
+
+      eligible.sort((a, b) => (assignCount.get(a.id) || 0) - (assignCount.get(b.id) || 0));
+
+      for (let i = 0; i < Math.min(needed, eligible.length); i++) {
+        const w = eligible[i];
+        assignments[date][station.id].push(w.id);
+        assignedOnDay[date].add(w.id);
+        assignCount.set(w.id, (assignCount.get(w.id) || 0) + 1);
+      }
+    }
+  }
+
+  return assignments;
+}
+
+// ─── Data Views ───────────────────────────────────────────────────────────────
+
+function effectiveSchedule(store) {
+  const month = store.month;
+  const gen = store.schedule?.[month] || {};
+  const manual = store.manualAssignments?.[month] || {};
+  const merged = {};
+  const allDates = new Set([...Object.keys(gen), ...Object.keys(manual)]);
+  for (const date of allDates) {
+    merged[date] = { ...(gen[date] || {}) };
+    for (const [sid, wids] of Object.entries(manual[date] || {})) {
+      merged[date][sid] = wids;
+    }
+  }
+  return merged;
+}
+
+function workerScheduleData(store, worker) {
+  if (!store.schedulePublished) return null;
+  const sched = effectiveSchedule(store);
+  const shifts = [];
+  for (const [date, stations] of Object.entries(sched)) {
+    for (const [stationId, workerIds] of Object.entries(stations)) {
+      if (workerIds.includes(worker.id)) {
+        const station = store.stations.find((s) => s.id === stationId);
+        const ds = store.daySettings?.[date] || {};
+        const opensAt = station?.opensAt || ds.opensAt || store.defaultOpensAt || '10:00';
+        const closesAt = station?.closesAt || ds.closesAt || store.defaultClosesAt || '19:00';
+        shifts.push({ date, stationId, stationName: station?.name || stationId, opensAt, closesAt });
+      }
+    }
+  }
+  return shifts.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function publicWorkerStore(store, worker) {
+  const latestSub = store.submissions
+    .filter((s) => s.workerId === worker.id)
+    .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))[0];
+
+  const pendingRequests = (store.changeRequests || []).filter(
+    (r) => r.workerId === worker.id && r.status === 'pending'
+  ).length;
+
+  return {
+    workerName: worker.name,
+    workerId: worker.id,
+    hasPassword: !!worker.passwordHash,
+    month: store.month,
+    periodStart: store.periodStart,
+    periodEnd: store.periodEnd,
+    openDays: store.openDays,
+    daySettings: store.daySettings,
+    defaultOpensAt: store.defaultOpensAt,
+    defaultClosesAt: store.defaultClosesAt,
+    stations: store.stations.map((s) => ({ id: s.id, name: s.name, opensAt: s.opensAt, closesAt: s.closesAt })),
+    availabilityDeadline: store.availabilityDeadline,
+    locked: isAvailabilityLocked(store) || store.schedulePublished,
+    scheduleVisible: Boolean(store.schedulePublished),
+    unavailableDays: latestSub?.unavailableDays || [],
+    submittedAt: latestSub?.submittedAt || null,
+    confirmedSchedule: workerScheduleData(store, worker),
+    pendingRequests,
+  };
+}
+
+function operatorScheduleView(store) {
+  const sched = effectiveSchedule(store);
+  const workerMap = new Map(store.workers.map((w) => [w.id, w.name]));
+  const result = {};
+  for (const date of [...store.openDays].sort()) {
+    result[date] = {};
+    for (const station of store.stations) {
+      const wids = sched[date]?.[station.id] || [];
+      result[date][station.id] = {
+        stationName: station.name,
+        opensAt: station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt,
+        closesAt: station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt,
+        workers: wids.map((id) => workerMap.get(id) || id),
+      };
+    }
+  }
+  return result;
+}
+
+function adminView(store) {
+  const workerMap = new Map(store.workers.map((w) => [w.id, w.name]));
+  const sched = effectiveSchedule(store);
+
+  const latestSub = new Map();
+  for (const sub of store.submissions) {
+    const ex = latestSub.get(sub.workerId);
+    if (!ex || sub.submittedAt > ex.submittedAt) latestSub.set(sub.workerId, sub);
+  }
+
+  const scheduleWithNames = {};
+  for (const date of store.openDays) {
+    scheduleWithNames[date] = { _free: [] };
+    const assigned = new Set();
+
+    const dayOv = store.daySettings?.[date]?.stationOverrides || {};
+    for (const station of store.stations) {
+      const ov = dayOv[station.id];
+      const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
+      const wids = sched[date]?.[station.id] || [];
+      wids.forEach((id) => assigned.add(id));
+      scheduleWithNames[date][station.id] = {
+        stationName: ov?.mergedLabel || station.name,
+        needed,
+        hidden: needed === 0,
+        opensAt: station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt,
+        closesAt: station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt,
+        workerIds: wids,
+        workerNames: wids.map((id) => workerMap.get(id) || id),
+      };
+    }
+
+    scheduleWithNames[date]._free = store.workers
+      .filter((w) => {
+        if (assigned.has(w.id)) return false;
+        const sub = latestSub.get(w.id);
+        if (sub?.unavailableDays?.includes(date)) return false;
+        return true;
+      })
+      .map((w) => ({ id: w.id, name: w.name }));
+  }
+
+  return {
+    ...store,
+    workers: store.workers.map((w) => ({
+      id: w.id,
+      name: w.name,
+      token: w.token,
+      hasPassword: !!w.passwordHash,
+      allowedStations: w.allowedStations || [],
+      submitted: latestSub.has(w.id),
+      submittedAt: latestSub.get(w.id)?.submittedAt || null,
+      submissionId: latestSub.get(w.id)?.id || null,
+      unavailableDays: latestSub.get(w.id)?.unavailableDays || [],
+    })),
+    operators: (store.operators || []).map((o) => ({
+      id: o.id,
+      name: o.name,
+      token: o.token,
+      hasPassword: !!o.passwordHash,
+    })),
+    scheduleWithNames,
+    changeRequests: store.changeRequests || [],
+  };
+}
+
+// ─── Exports ──────────────────────────────────────────────────────────────────
+
+function exportSubmissionsCSV(store) {
+  const latestSub = new Map();
+  for (const sub of store.submissions) {
+    const ex = latestSub.get(sub.workerId);
+    if (!ex || sub.submittedAt > ex.submittedAt) latestSub.set(sub.workerId, sub);
+  }
+  const lines = ['Meno,Odoslané,Nedostupné dni'];
+  for (const w of store.workers) {
+    const sub = latestSub.get(w.id);
+    lines.push([
+      `"${w.name}"`,
+      sub ? `"${sub.submittedAt.slice(0, 10)}"` : '"Neodoslané"',
+      sub ? `"${(sub.unavailableDays || []).join(', ')}"` : '""',
+    ].join(','));
+  }
+  return lines.join('\n');
+}
+
+function exportScheduleCSV(store) {
+  const sched = effectiveSchedule(store);
+  const workerMap = new Map(store.workers.map((w) => [w.id, w.name]));
+  const lines = ['Dátum,Stanovisko,Čas,Brigádnici'];
+  for (const date of [...store.openDays].sort()) {
+    for (const station of store.stations) {
+      const wids = sched[date]?.[station.id] || [];
+      const opensAt = station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt;
+      const closesAt = station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt;
+      lines.push([
+        `"${date}"`,
+        `"${station.name}"`,
+        `"${opensAt}–${closesAt}"`,
+        `"${wids.map((id) => workerMap.get(id) || id).join(', ')}"`,
+      ].join(','));
+    }
+  }
+  return lines.join('\n');
+}
+
+async function exportScheduleXLSX(store) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Rozpis');
+  const sched = effectiveSchedule(store);
+  const workerMap = new Map(store.workers.map((w) => [w.id, w.name]));
+
+  ws.addRow(['Dátum', 'Stanovisko', 'Od', 'Do', 'Brigádnici']);
+  ws.getRow(1).font = { bold: true };
+  ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6B35' } };
+
+  for (const date of [...store.openDays].sort()) {
+    for (const station of store.stations) {
+      const wids = sched[date]?.[station.id] || [];
+      const opensAt = station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt;
+      const closesAt = station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt;
+      ws.addRow([
+        date,
+        station.name,
+        opensAt,
+        closesAt,
+        wids.map((id) => workerMap.get(id) || id).join(', '),
+      ]);
+    }
+  }
+
+  ws.columns.forEach((col) => { col.width = 22; });
+  return wb.xlsx.writeBuffer();
+}
+
+// ─── PDF Print Export (HTML) ──────────────────────────────────────────────────
+
+function exportSchedulePrintHTML(store) {
+  const sched = effectiveSchedule(store);
+  const workerMap = new Map(store.workers.map((w) => [w.id, w.name]));
+
+  const PASTEL = [
+    '#FFD6D6','#D5F5E3','#D6EAF8','#FDEBD0','#E8DAEF',
+    '#D1F2EB','#FCF3CF','#FADBD8','#EBF5FB','#F9EBEA',
+    '#D4EFDF','#D2B4DE','#AED6F1','#FAD7A0','#A9DFBF',
+    '#F1948A','#85C1E9','#82E0AA','#F8C471','#BB8FCE',
+  ];
+  const workerColors = new Map();
+  let ci = 0;
+  for (const w of store.workers) {
+    workerColors.set(w.id, PASTEL[ci++ % PASTEL.length]);
+  }
+  // also assign colors by name for workers not in store (legacy data)
+  const nameColors = new Map();
+  for (const [id, color] of workerColors) {
+    nameColors.set(workerMap.get(id), color);
+  }
+
+  const DAY_SK = ['Nedeľa','Pondelok','Utorok','Streda','Štvrtok','Piatok','Sobota'];
+  const MONTH_SK = ['január','február','marec','apríl','máj','jún','júl','august','september','október','november','december'];
+
+  const sortedDays = [...store.openDays].sort();
+  if (!sortedDays.length) return '<p>Žiadne otvorené dni.</p>';
+
+  // Group by ISO week (Mon=start)
+  function isoWeekKey(iso) {
+    const d = new Date(iso + 'T12:00:00');
+    const day = d.getDay() || 7;
+    const mon = new Date(d); mon.setDate(d.getDate() - day + 1);
+    return mon.toISOString().slice(0, 10);
+  }
+  const weekMap = new Map();
+  for (const date of sortedDays) {
+    const key = isoWeekKey(date);
+    if (!weekMap.has(key)) weekMap.set(key, []);
+    weekMap.get(key).push(date);
+  }
+
+  function fmtDay(iso) {
+    const d = new Date(iso + 'T12:00:00');
+    return `${d.getDate()}. ${d.getMonth() + 1}.`;
+  }
+  function fmtDayName(iso) {
+    const d = new Date(iso + 'T12:00:00');
+    return DAY_SK[d.getDay()];
+  }
+
+  const firstDay = new Date(sortedDays[0] + 'T12:00:00');
+  const monthLabel = `${MONTH_SK[firstDay.getMonth()].toUpperCase()} ${firstDay.getFullYear()}`;
+
+  let pages = '';
+  let pageNum = 1;
+  for (const [, days] of weekMap) {
+    const fromDate = new Date(days[0] + 'T12:00:00');
+    const toDate   = new Date(days[days.length - 1] + 'T12:00:00');
+    const from = fmtDay(days[0]);
+    const to   = fmtDay(days[days.length - 1]);
+    const fromYear = fromDate.getFullYear();
+    const toYear   = toDate.getFullYear();
+    const weekHeader = fromYear === toYear
+      ? `TÝŽDEŇ ${from} ${fromYear} &mdash; ${to} ${toYear}`
+      : `TÝŽDEŇ ${from} ${fromYear} &mdash; ${to} ${toYear}`;
+
+    // pad to 7 columns (Mon-Sun) — fill missing days with empty headers
+    const allWeekDays = [];
+    const cur = new Date(fromDate);
+    const dayOfWeek = cur.getDay() || 7;
+    cur.setDate(cur.getDate() - dayOfWeek + 1); // go to Monday
+    for (let i = 0; i < 7; i++) {
+      const iso = cur.toISOString().slice(0, 10);
+      allWeekDays.push(days.includes(iso) ? iso : null);
+      cur.setDate(cur.getDate() + 1);
+    }
+    // if all 7 are null except some, just use actual days (no padding for short weeks)
+    const colDays = allWeekDays.every(d => d === null) ? days : allWeekDays;
+    const hasEmptyCols = colDays.some(d => d === null);
+
+    let colHeaders = `<th class="stn-col">Stanovisko</th>`;
+    for (const d of colDays) {
+      if (d === null) {
+        colHeaders += `<th class="col-empty"></th>`;
+      } else {
+        colHeaders += `<th><span class="day-name">${fmtDayName(d)}</span><br>${fmtDay(d)}</th>`;
+      }
+    }
+
+    let rows = '';
+    for (const station of store.stations) {
+      // check if this station is hidden on ALL days of this week → skip entire row
+      const allHidden = colDays.every((d) => {
+        if (!d) return true;
+        const ov = store.daySettings?.[d]?.stationOverrides?.[station.id];
+        return ov !== undefined && (ov.required ?? 1) === 0;
+      });
+      if (allHidden) continue;
+
+      // determine per-day label and visibility
+      const rowCells = colDays.map((d) => {
+        if (d === null) return `<td class="col-empty"></td>`;
+        const ov = store.daySettings?.[d]?.stationOverrides?.[station.id];
+        const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
+        if (needed === 0) return `<td class="col-empty" title="Zlúčené/zatvorené"></td>`;
+        const wids = sched[d]?.[station.id] || [];
+        if (wids.length === 0) return `<td></td>`;
+        const parts = wids.map((id) => {
+          const name = workerMap.get(id) || id;
+          const color = workerColors.get(id) || nameColors.get(name) || '#F5F5F5';
+          return `<span class="worker-cell" style="background:${color}">${name}</span>`;
+        });
+        return `<td>${parts.join('')}</td>`;
+      });
+
+      // station label: use mergedLabel from any day that has it (first found)
+      const stnLabel = colDays.reduce((lbl, d) => {
+        if (lbl || !d) return lbl;
+        return store.daySettings?.[d]?.stationOverrides?.[station.id]?.mergedLabel || null;
+      }, null) || station.name;
+
+      rows += `<tr><td class="stn-name">${stnLabel}</td>${rowCells.join('')}</tr>`;
+    }
+
+    pages += `
+    <div class="week-page">
+      <h1 class="doc-title">FLP - ROZPIS ${monthLabel}</h1>
+      <div class="week-header">${weekHeader}</div>
+      <table><thead><tr>${colHeaders}</tr></thead><tbody>${rows}</tbody></table>
+      <div class="page-footer">Strana ${pageNum}</div>
+    </div>`;
+    pageNum++;
+  }
+
+  // Legend page
+  let legendRows = '';
+  for (const [id, color] of workerColors) {
+    const name = workerMap.get(id);
+    if (!name) continue;
+    legendRows += `<tr><td class="legend-name" style="background:${color}">${name}</td><td style="background:${color}"></td></tr>`;
+  }
+
+  const legendPage = `
+  <div class="week-page">
+    <h1 class="doc-title">FLP - FARBY BRIGÁDNIKOV</h1>
+    <table class="legend-table">
+      <thead><tr><th>Brigádnik</th><th>Farba</th></tr></thead>
+      <tbody>${legendRows}</tbody>
+    </table>
+    <div class="page-footer">Strana ${pageNum}</div>
+  </div>`;
+
+  return `<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="UTF-8">
+<title>FLP - Rozpis ${monthLabel}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, Helvetica, sans-serif; background: #fff; color: #1a3a6b; }
+
+  .no-print { display: flex; gap: 10px; padding: 14px 20px; background: #f0f4ff; border-bottom: 2px solid #1a3a6b; }
+  .no-print button { padding: 8px 20px; background: #1a3a6b; color: #fff; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; font-weight: bold; }
+  .no-print button:hover { background: #0c2372; }
+  .no-print span { align-self: center; font-size: 13px; color: #555; }
+
+  .week-page { padding: 28px 36px 20px; page-break-after: always; }
+  .week-page:last-child { page-break-after: auto; }
+
+  .doc-title { text-align: center; font-size: 22px; font-weight: bold; color: #1a3a6b; margin-bottom: 18px; letter-spacing: .5px; }
+
+  .week-header { background: #1a3a6b; color: #fff; text-align: center; font-size: 14px; font-weight: bold; padding: 10px 0; border-radius: 4px 4px 0 0; letter-spacing: .3px; }
+
+  table { width: 100%; border-collapse: collapse; border: 1.5px solid #5b8fc0; }
+  thead tr th { background: #4a7fad; color: #fff; font-size: 12px; font-weight: bold; text-align: center; padding: 8px 6px; border: 1px solid #5b8fc0; }
+  th.stn-col { width: 130px; }
+  tbody tr td { padding: 6px 6px; border: 1px solid #c8d8e8; text-align: center; vertical-align: middle; font-size: 11.5px; }
+  td.stn-name { font-weight: bold; background: #f0f4fa; text-align: left; padding-left: 10px; }
+
+  .worker-cell { display: block; font-weight: bold; padding: 3px 5px; border-radius: 3px; margin: 2px auto; font-size: 11px; }
+  .day-name { font-size: 11px; display: block; }
+
+  .legend-table { max-width: 500px; margin: 0 auto; }
+  .legend-table th { font-size: 13px; padding: 10px 14px; }
+  .legend-table td { padding: 7px 14px; font-size: 12px; }
+  td.legend-name { font-weight: bold; text-align: center; }
+
+  .col-empty { background: #f8f9fa !important; border-color: #e0e4ea !important; }
+  th.col-empty { background: #3a6a9a !important; }
+
+  .page-footer { text-align: center; font-size: 11px; color: #888; margin-top: 14px; }
+
+  @media print {
+    .no-print { display: none !important; }
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .week-page { padding: 12px 16px 8px; }
+    .doc-title { font-size: 17px; margin-bottom: 10px; }
+    .page-footer { position: fixed; bottom: 4mm; width: 100%; }
+    @page { size: A4 landscape; margin: 10mm 12mm; }
+  }
+</style>
+</head>
+<body>
+<div class="no-print">
+  <button onclick="window.print()">🖨 Tlačiť / Uložiť ako PDF</button>
+  <span>V dialógu tlačiarne zvoľ "Uložiť ako PDF" · Orientácia: Na šírku (Landscape)</span>
+</div>
+${pages}
+${legendPage}
+</body>
+</html>`;
+}
+
+// ─── HTTP Utilities ───────────────────────────────────────────────────────────
+
+function getCookie(req, name) {
+  for (const part of (req.headers.cookie || '').split(';')) {
+    const [k, v] = part.trim().split('=');
+    if (k === name) return decodeURIComponent(v || '');
+  }
+  return null;
+}
+
+function parseBody(req) {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (chunk) => { data += chunk; });
+    req.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve({}); } });
+  });
+}
+
+function respond(res, status, data) {
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(data));
+}
+
+function requireAdmin(req, res) {
+  if (!getSession(getCookie(req, 'session'))) {
+    respond(res, 401, { error: 'Nie si prihlásený' });
+    return false;
+  }
+  return true;
+}
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.svg': 'image/svg+xml',
+};
+
+// ─── Request Handler ──────────────────────────────────────────────────────────
+
+async function handleRequest(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const p = url.pathname;
+  const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
+
+  // Health
+  if (req.method === 'GET' && p === '/api/health') {
+    return respond(res, 200, { ok: true, storage: pool ? 'postgres' : 'json' });
+  }
+
+  // Public config
+  if (req.method === 'GET' && p === '/api/public-config') {
+    const store = await getStore();
+    return respond(res, 200, {
+      month: store.month,
+      periodStart: store.periodStart,
+      periodEnd: store.periodEnd,
+      availabilityDeadline: store.availabilityDeadline,
+    });
+  }
+
+  // Login / Logout / Session
+  if (req.method === 'POST' && p === '/api/login') {
+    if (!checkRateLimit(`login:${ip}`, 10, 15 * 60 * 1000)) {
+      return respond(res, 429, { error: 'Príliš veľa pokusov. Skúste o 15 minút.' });
+    }
+    const body = await parseBody(req);
+    if (body.password !== ADMIN_PASSWORD) {
+      return respond(res, 401, { error: 'Nesprávne heslo' });
+    }
+    const token = createSession();
+    res.setHeader('Set-Cookie', `session=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=43200`);
+    return respond(res, 200, { ok: true });
+  }
+
+  if (req.method === 'POST' && p === '/api/logout') {
+    const token = getCookie(req, 'session');
+    if (token) deleteSession(token);
+    res.setHeader('Set-Cookie', 'session=; HttpOnly; Path=/; Max-Age=0');
+    return respond(res, 200, { ok: true });
+  }
+
+  if (req.method === 'GET' && p === '/api/session') {
+    return respond(res, 200, { loggedIn: Boolean(getSession(getCookie(req, 'session'))) });
+  }
+
+  // Worker — GET info
+  const workerM = p.match(/^\/api\/worker\/([a-zA-Z0-9]+)$/);
+  if (workerM) {
+    const store = await getStore();
+    const worker = store.workers.find((w) => w.token === workerM[1]);
+    if (!worker) return respond(res, 404, { error: 'Odkaz neexistuje' });
+    if (req.method === 'GET') return respond(res, 200, publicWorkerStore(store, worker));
+    return respond(res, 405, { error: 'Method Not Allowed' });
+  }
+
+  // Worker — access (password check)
+  const workerAccessM = p.match(/^\/api\/worker\/([a-zA-Z0-9]+)\/access$/);
+  if (workerAccessM && req.method === 'POST') {
+    const store = await getStore();
+    const worker = store.workers.find((w) => w.token === workerAccessM[1]);
+    if (!worker) return respond(res, 404, { error: 'Odkaz neexistuje' });
+    if (!worker.passwordHash) return respond(res, 200, { ok: true });
+    if (!checkRateLimit(`waccess:${worker.id}:${ip}`, 5, 15 * 60 * 1000)) {
+      return respond(res, 429, { error: 'Príliš veľa pokusov' });
+    }
+    const body = await parseBody(req);
+    if (!verifyPassword(worker.passwordHash, body.password || '')) {
+      return respond(res, 401, { error: 'Nesprávne heslo' });
+    }
+    return respond(res, 200, { ok: true });
+  }
+
+  // Worker — submit availability
+  const workerSubM = p.match(/^\/api\/worker\/([a-zA-Z0-9]+)\/submission$/);
+  if (workerSubM && req.method === 'PUT') {
+    const store = await getStore();
+    const worker = store.workers.find((w) => w.token === workerSubM[1]);
+    if (!worker) return respond(res, 404, { error: 'Odkaz neexistuje' });
+    if (store.schedulePublished || isAvailabilityLocked(store)) {
+      return respond(res, 403, { error: 'Odovzdávanie dostupnosti je uzamknuté' });
+    }
+    const body = await parseBody(req);
+    await mutateStore((s) => {
+      s.submissions.push({
+        id: generateToken(),
+        workerId: worker.id,
+        workerName: worker.name,
+        unavailableDays: Array.isArray(body.unavailableDays) ? body.unavailableDays : [],
+        submittedAt: new Date().toISOString(),
+      });
+    });
+    return respond(res, 200, { ok: true });
+  }
+
+  // Worker — change request
+  const changeReqM = p.match(/^\/api\/worker\/([a-zA-Z0-9]+)\/change-request$/);
+  if (changeReqM && req.method === 'POST') {
+    const store = await getStore();
+    const worker = store.workers.find((w) => w.token === changeReqM[1]);
+    if (!worker) return respond(res, 404, { error: 'Odkaz neexistuje' });
+    const body = await parseBody(req);
+    await mutateStore((s) => {
+      if (!s.changeRequests) s.changeRequests = [];
+      s.changeRequests.push({
+        id: generateToken(),
+        workerId: worker.id,
+        workerName: worker.name,
+        days: body.days || [],
+        reason: body.reason || '',
+        status: 'pending',
+        requestedAt: new Date().toISOString(),
+      });
+    });
+    return respond(res, 200, { ok: true });
+  }
+
+  // Operator — GET schedule
+  const operatorM = p.match(/^\/api\/operator\/([a-zA-Z0-9]+)$/);
+  if (operatorM && req.method === 'GET') {
+    const store = await getStore();
+    const op = (store.operators || []).find((o) => o.token === operatorM[1]);
+    if (!op) return respond(res, 404, { error: 'Odkaz neexistuje' });
+    return respond(res, 200, {
+      operatorName: op.name,
+      hasPassword: !!op.passwordHash,
+      schedulePublished: store.schedulePublished,
+      month: store.month,
+      stations: store.stations,
+      openDays: [...store.openDays].sort(),
+      schedule: operatorScheduleView(store),
+    });
+  }
+
+  // Operator — access
+  const operatorAccessM = p.match(/^\/api\/operator\/([a-zA-Z0-9]+)\/access$/);
+  if (operatorAccessM && req.method === 'POST') {
+    const store = await getStore();
+    const op = (store.operators || []).find((o) => o.token === operatorAccessM[1]);
+    if (!op) return respond(res, 404, { error: 'Odkaz neexistuje' });
+    if (!op.passwordHash) return respond(res, 200, { ok: true });
+    if (!checkRateLimit(`oaccess:${op.id}:${ip}`, 5, 15 * 60 * 1000)) {
+      return respond(res, 429, { error: 'Príliš veľa pokusov' });
+    }
+    const body = await parseBody(req);
+    if (!verifyPassword(op.passwordHash, body.password || '')) {
+      return respond(res, 401, { error: 'Nesprávne heslo' });
+    }
+    return respond(res, 200, { ok: true });
+  }
+
+  // Admin — full store
+  if (req.method === 'GET' && p === '/api/admin') {
+    if (!requireAdmin(req, res)) return;
+    return respond(res, 200, adminView(await getStore()));
+  }
+
+  // Admin — save config
+  if (req.method === 'PUT' && p === '/api/config') {
+    if (!requireAdmin(req, res)) return;
+    const body = await parseBody(req);
+    await mutateStore((s) => {
+      const monthChanging = body.month && body.month !== s.month;
+
+      if (body.month !== undefined) s.month = body.month;
+      if (body.periodStart !== undefined) s.periodStart = body.periodStart;
+      if (body.periodEnd !== undefined) s.periodEnd = body.periodEnd;
+      if (body.availabilityDeadline !== undefined) s.availabilityDeadline = body.availabilityDeadline;
+      if (body.defaultOpensAt !== undefined) s.defaultOpensAt = body.defaultOpensAt;
+      if (body.defaultClosesAt !== undefined) s.defaultClosesAt = body.defaultClosesAt;
+      if (Array.isArray(body.openDays)) s.openDays = body.openDays;
+      if (body.daySettings !== undefined) s.daySettings = body.daySettings;
+
+      if (monthChanging) s.schedulePublished = false;
+
+      if (Array.isArray(body.stations)) {
+        const existById = new Map(s.stations.map((st) => [st.id, st]));
+        s.stations = body.stations.map((st) => {
+          const ex = existById.get(st.id) || {};
+          return {
+            id: st.id || crypto.randomBytes(6).toString('hex'),
+            name: st.name,
+            required: Number(st.required) || 1,
+            opensAt: st.opensAt !== undefined ? st.opensAt : (ex.opensAt || ''),
+            closesAt: st.closesAt !== undefined ? st.closesAt : (ex.closesAt || ''),
+          };
+        });
+      }
+
+      if (Array.isArray(body.workers)) {
+        const existById = new Map(s.workers.map((w) => [w.id, w]));
+        s.workers = body.workers.map((w) => {
+          const ex = existById.get(w.id) || {};
+          const updated = {
+            id: w.id || crypto.randomBytes(8).toString('hex'),
+            name: w.name,
+            token: ex.token || generateToken(),
+            passwordHash: ex.passwordHash || null,
+            allowedStations: w.allowedStations || [],
+          };
+          if (w.password) updated.passwordHash = hashPassword(w.password);
+          if (w.password === '') updated.passwordHash = null;
+          return updated;
+        });
+      }
+
+      if (Array.isArray(body.operators)) {
+        const existById = new Map((s.operators || []).map((o) => [o.id, o]));
+        s.operators = body.operators.map((o) => {
+          const ex = existById.get(o.id) || {};
+          const updated = {
+            id: o.id || crypto.randomBytes(8).toString('hex'),
+            name: o.name,
+            token: ex.token || generateToken(),
+            passwordHash: ex.passwordHash || null,
+          };
+          if (o.password) updated.passwordHash = hashPassword(o.password);
+          if (o.password === '') updated.passwordHash = null;
+          return updated;
+        });
+      }
+    });
+    return respond(res, 200, adminView(await getStore()));
+  }
+
+  // Admin — generate schedule
+  if (req.method === 'PUT' && p === '/api/schedule') {
+    if (!requireAdmin(req, res)) return;
+    await mutateStore((s) => {
+      if (!s.schedule) s.schedule = {};
+      s.schedule[s.month] = generateSchedule(s);
+      s.schedulePublished = false;
+    });
+    return respond(res, 200, adminView(await getStore()));
+  }
+
+  // Admin — manual assignments
+  if (req.method === 'PUT' && p === '/api/manual-assignments') {
+    if (!requireAdmin(req, res)) return;
+    const body = await parseBody(req);
+    await mutateStore((s) => {
+      if (!s.manualAssignments) s.manualAssignments = {};
+      if (!s.manualAssignments[s.month]) s.manualAssignments[s.month] = {};
+      for (const [date, stations] of Object.entries(body.assignments || {})) {
+        if (!s.manualAssignments[s.month][date]) s.manualAssignments[s.month][date] = {};
+        for (const [stationId, workerIds] of Object.entries(stations)) {
+          s.manualAssignments[s.month][date][stationId] = workerIds;
+        }
+      }
+      s.schedulePublished = false;
+    });
+    return respond(res, 200, adminView(await getStore()));
+  }
+
+  // Admin — publish / unpublish
+  if (req.method === 'PUT' && p === '/api/schedule-publication') {
+    if (!requireAdmin(req, res)) return;
+    const body = await parseBody(req);
+    await mutateStore((s) => { s.schedulePublished = Boolean(body.published); });
+    return respond(res, 200, { ok: true, schedulePublished: Boolean(body.published) });
+  }
+
+  // Admin — delete submission
+  const delSubM = p.match(/^\/api\/submissions\/([^/]+)$/);
+  if (delSubM && req.method === 'DELETE') {
+    if (!requireAdmin(req, res)) return;
+    await mutateStore((s) => { s.submissions = s.submissions.filter((sub) => sub.id !== delSubM[1]); });
+    return respond(res, 200, { ok: true });
+  }
+
+  // Admin — approve change request
+  const approveM = p.match(/^\/api\/change-requests\/([^/]+)\/approve$/);
+  if (approveM && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return;
+    await mutateStore((s) => {
+      const cr = (s.changeRequests || []).find((r) => r.id === approveM[1]);
+      if (!cr) return;
+      cr.status = 'approved';
+      cr.resolvedAt = new Date().toISOString();
+      const worker = s.workers.find((w) => w.id === cr.workerId);
+      if (worker) {
+        s.submissions.push({
+          id: generateToken(),
+          workerId: worker.id,
+          workerName: worker.name,
+          unavailableDays: cr.days || [],
+          submittedAt: new Date().toISOString(),
+        });
+      }
+    });
+    return respond(res, 200, { ok: true });
+  }
+
+  // Admin — reject change request
+  const rejectM = p.match(/^\/api\/change-requests\/([^/]+)\/reject$/);
+  if (rejectM && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return;
+    await mutateStore((s) => {
+      const cr = (s.changeRequests || []).find((r) => r.id === rejectM[1]);
+      if (cr) { cr.status = 'rejected'; cr.resolvedAt = new Date().toISOString(); }
+    });
+    return respond(res, 200, { ok: true });
+  }
+
+  // Exports
+  if (req.method === 'GET' && p === '/api/export/submissions.csv') {
+    if (!requireAdmin(req, res)) return;
+    const store = await getStore();
+    res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="submissions.csv"' });
+    return res.end('﻿' + exportSubmissionsCSV(store));
+  }
+
+  if (req.method === 'GET' && p === '/api/export/schedule.csv') {
+    if (!requireAdmin(req, res)) return;
+    const store = await getStore();
+    res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="schedule.csv"' });
+    return res.end('﻿' + exportScheduleCSV(store));
+  }
+
+  if (req.method === 'GET' && p === '/api/export/schedule.xlsx') {
+    if (!requireAdmin(req, res)) return;
+    const store = await getStore();
+    const buffer = await exportScheduleXLSX(store);
+    res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="schedule.xlsx"' });
+    return res.end(buffer);
+  }
+
+  // Agent data endpoint — read-only, requires AGENT_API_KEY header
+  if (req.method === 'GET' && p === '/api/agent-data') {
+    const key = req.headers['x-agent-key'];
+    if (!AGENT_API_KEY || key !== AGENT_API_KEY) {
+      return respond(res, 401, { error: 'Neplatný agent kľúč' });
+    }
+    const store = await getStore();
+    const sched = effectiveSchedule(store);
+    const workerMap = new Map(store.workers.map((w) => [w.id, w.name]));
+    const latestSub = new Map();
+    for (const sub of store.submissions) {
+      const ex = latestSub.get(sub.workerId);
+      if (!ex || sub.submittedAt > ex.submittedAt) latestSub.set(sub.workerId, sub);
+    }
+    const scheduleTable = {};
+    for (const date of store.openDays) {
+      scheduleTable[date] = {};
+      for (const station of store.stations) {
+        const wids = sched[date]?.[station.id] || [];
+        scheduleTable[date][station.name] = wids.map((id) => workerMap.get(id) || id);
+      }
+    }
+    return respond(res, 200, {
+      month: store.month,
+      periodStart: store.periodStart,
+      periodEnd: store.periodEnd,
+      schedulePublished: store.schedulePublished,
+      stations: store.stations.map((s) => s.name),
+      workers: store.workers.map((w) => ({
+        name: w.name,
+        submitted: !!latestSub.get(w.id),
+        unavailableDays: latestSub.get(w.id)?.unavailableDays || [],
+      })),
+      schedule: scheduleTable,
+      changeRequests: store.changeRequests.map((r) => ({
+        worker: r.workerName, days: r.days, reason: r.reason, status: r.status,
+      })),
+    });
+  }
+
+  if (req.method === 'GET' && p === '/api/export/schedule-print') {
+    if (!requireAdmin(req, res)) return;
+    const store = await getStore();
+    const html = exportSchedulePrintHTML(store);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(html);
+  }
+
+  if (req.method === 'GET' && p === '/api/export/backup.json') {
+    if (!requireAdmin(req, res)) return;
+    const store = await getStore();
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="backup.json"' });
+    return res.end(JSON.stringify(store, null, 2));
+  }
+
+  // Static files
+  const publicDir = path.join(__dirname, 'public');
+  let filePath = p.startsWith('/api/') ? null : path.join(publicDir, p === '/' ? 'index.html' : p);
+
+  if (filePath) {
+    if (!filePath.startsWith(publicDir + path.sep) && filePath !== publicDir) {
+      return respond(res, 403, { error: 'Forbidden' });
+    }
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      const ext = path.extname(filePath).toLowerCase();
+      res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-store' });
+      return fs.createReadStream(filePath).pipe(res);
+    }
+    // SPA fallback for client-side routes
+    if (!p.includes('.')) {
+      const idx = path.join(publicDir, 'index.html');
+      if (fs.existsSync(idx)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        return fs.createReadStream(idx).pipe(res);
+      }
+    }
+  }
+
+  respond(res, 404, { error: 'Nenájdené' });
+}
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+
+async function start() {
+  if (pool) await ensureTable();
+  const server = http.createServer(async (req, res) => {
+    try {
+      await handleRequest(req, res);
+    } catch (err) {
+      console.error('Chyba požiadavky:', err);
+      if (!res.headersSent) respond(res, 500, { error: 'Interná chyba servera' });
+    }
+  });
+  server.listen(PORT, HOST, () => {
+    console.log(`Fantazia Shift Planner running at http://${HOST}:${PORT}`);
+    console.log(`Storage: ${pool ? 'postgres' : 'json'}`);
+  });
+}
+
+start().catch((err) => { console.error('Startup error:', err); process.exit(1); });

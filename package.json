@@ -1,0 +1,14 @@
+{
+  "name": "fantazia-shift-planner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "pdfkit": "^0.19.1",
+    "pg": "^8.16.0"
+  }
+}
