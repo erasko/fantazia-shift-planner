@@ -1086,6 +1086,27 @@ async function handleRequest(req, res) {
     return res.end(JSON.stringify(store, null, 2));
   }
 
+  if (req.method === 'GET' && p === '/api/admin/codex-backups') {
+    if (!requireAdmin(req, res)) return;
+    if (!pool) return json(res, 400, { error: 'No database connection' });
+    try {
+      const r = await pool.query(`
+        SELECT id, reason, created_at,
+               data->'workers' as workers,
+               data->'stations' as stations,
+               data->'month' as month
+        FROM app_backups ORDER BY created_at DESC LIMIT 20
+      `);
+      const store = await pool.query(`SELECT data FROM app_store WHERE id = 'main'`);
+      return json(res, 200, {
+        backups: r.rows,
+        currentStore: store.rows[0]?.data || null
+      });
+    } catch(e) {
+      return json(res, 500, { error: e.message });
+    }
+  }
+
   // Static files
   const publicDir = path.join(__dirname, 'public');
   let filePath = p.startsWith('/api/') ? null : path.join(publicDir, p === '/' ? 'index.html' : p);
