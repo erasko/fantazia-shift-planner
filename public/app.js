@@ -1328,6 +1328,108 @@
   }
 
   // ─── AGENT TAB ────────────────────────────────────────────────────────────
+  function computeShiftCounts(d) {
+    const counts = new Map();
+    for (const w of d.workers || []) counts.set(w.id, 0);
+    for (const st of Object.values(d.scheduleWithNames || {})) {
+      for (const [sid, info] of Object.entries(st)) {
+        if (sid.startsWith('_') || info.hidden) continue;
+        (info.workerIds || []).forEach(wid => counts.set(wid, (counts.get(wid) || 0) + 1));
+      }
+    }
+    return counts;
+  }
+
+  function buildQuickOverview() {
+    const d = S.data;
+    const workers = d.workers || [];
+    const openDays = [...(d.openDays || [])].sort();
+
+    if (!openDays.length || !workers.length) {
+      return `<div class="card"><p class="text-muted">Najprv nastav otvorené dni a brigádnikov, potom vygeneruj rozpis.</p></div>`;
+    }
+
+    const counts = computeShiftCounts(d);
+    const countRows = [...counts.entries()]
+      .map(([wid, c]) => ({ name: (workers.find(w => w.id === wid) || {}).name || wid, count: c }))
+      .sort((a, b) => b.count - a.count)
+      .map(r => `<tr><td>${esc(r.name)}</td><td><span class="badge badge-info">${r.count} zmien</span></td></tr>`)
+      .join('');
+
+    const dateOpts = openDays.map(dt => `<option value="${esc(dt)}">${fmtShort(dt)}</option>`).join('');
+    const workerOpts = workers.map(w => `<option value="${esc(w.id)}">${esc(w.name)}</option>`).join('');
+
+    return `
+      <div class="card">
+        <div class="section-title">📊 Rýchly prehľad <span class="text-muted" style="font-size:.78rem;font-weight:400">(lokálne, bez AI — okamžité)</span></div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Kto robí v deň...</label>
+            <select id="qa-date-sel">${dateOpts}</select>
+          </div>
+          <div class="form-group">
+            <label>Kedy pracuje...</label>
+            <select id="qa-worker-sel">${workerOpts}</select>
+          </div>
+        </div>
+        <div id="qa-result" style="margin-top:6px"></div>
+
+        <div class="section-title" style="margin-top:18px">Počet zmien v mesiaci</div>
+        <div style="overflow-x:auto">
+          <table style="width:auto"><thead><tr><th>Brigádnik</th><th>Zmeny</th></tr></thead><tbody>${countRows}</tbody></table>
+        </div>
+      </div>`;
+  }
+
+  function renderQuickAnswers() {
+    const d = S.data;
+    const dateSel = document.getElementById('qa-date-sel');
+    const workerSel = document.getElementById('qa-worker-sel');
+    const out = document.getElementById('qa-result');
+    if (!out) return;
+
+    let html = '';
+
+    if (dateSel?.value) {
+      const date = dateSel.value;
+      const swnDay = d.scheduleWithNames?.[date] || {};
+      const rows = (d.stations || []).map(st => {
+        const info = swnDay[st.id];
+        if (!info || info.hidden) return '';
+        const names = (info.workerNames || []);
+        return `<div style="margin-bottom:4px"><strong>${esc(info.stationName || st.name)}:</strong> ${names.length ? names.map(esc).join(', ') : '<span class="text-muted">nikto priradený</span>'}</div>`;
+      }).join('');
+      const free = (swnDay._free || []).map(w => esc(w.name)).join(', ');
+      html += `<div class="alert alert-info" style="margin-bottom:10px"><strong>${fmtFull(date)}</strong><br>${rows}${free ? `<div style="margin-top:4px"><strong>Voľní:</strong> ${free}</div>` : ''}</div>`;
+    }
+
+    if (workerSel?.value) {
+      const wid = workerSel.value;
+      const wname = (d.workers || []).find(w => w.id === wid)?.name || wid;
+      const shifts = [];
+      for (const [date, st] of Object.entries(d.scheduleWithNames || {})) {
+        for (const [sid, info] of Object.entries(st)) {
+          if (sid.startsWith('_') || info.hidden) continue;
+          if ((info.workerIds || []).includes(wid)) {
+            shifts.push({ date, station: info.stationName });
+          }
+        }
+      }
+      shifts.sort((a, b) => a.date.localeCompare(b.date));
+      html += `<div class="alert alert-info"><strong>${esc(wname)}</strong> — ${shifts.length} zmien tento mesiac<br>${
+        shifts.length ? shifts.map(s => `${fmtShort(s.date)}: ${esc(s.station)}`).join('<br>') : '<span class="text-muted">Žiadne priradené zmeny.</span>'
+      }</div>`;
+    }
+
+    out.innerHTML = html;
+  }
+
+  function attachQuickOverview() {
+    document.getElementById('qa-date-sel')?.addEventListener('change', renderQuickAnswers);
+    document.getElementById('qa-worker-sel')?.addEventListener('change', renderQuickAnswers);
+    renderQuickAnswers();
+  }
+
   function buildAgent() {
     const msgs = S.agentHistory.map(m => {
       if (m.role === 'user') {
@@ -1341,6 +1443,7 @@
     }).join('');
 
     return `
+      ${buildQuickOverview()}
       <div class="card">
         <div class="section-title">🤖 Claude Agent — asistent pre rozvrh</div>
         <p class="text-muted" style="margin-bottom:14px">Pýtaj sa na brigádnikov, rozpis, dostupnosť... Agent vidí živé dáta z appky.</p>
@@ -1356,6 +1459,7 @@
   }
 
   function attachAgent() {
+    attachQuickOverview();
     const chatEl = document.getElementById('agent-chat');
     if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
 
