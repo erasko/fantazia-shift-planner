@@ -213,9 +213,10 @@ function generateSchedule(store) {
       const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
       if (needed === 0) continue;
 
+      const mergeIds = new Set([station.id, ...(ov?.mergeWith ? [ov.mergeWith] : [])]);
       const eligible = store.workers.filter((w) => {
         if (groupFilter && !groupFilter.has(w.id)) return false;
-        if (!(w.allowedStations || []).includes(station.id)) return false;
+        if (!(w.allowedStations || []).some((sid) => mergeIds.has(sid))) return false;
         if ((unavailable.get(w.id) || new Set()).has(date)) return false;
         if (assignedOnDay[date].has(w.id)) return false;
         return true;
@@ -257,13 +258,15 @@ function workerScheduleData(store, worker) {
   const sched = effectiveSchedule(store);
   const shifts = [];
   for (const [date, stations] of Object.entries(sched)) {
+    const dayOv = store.daySettings?.[date]?.stationOverrides || {};
     for (const [stationId, workerIds] of Object.entries(stations)) {
       if (workerIds.includes(worker.id)) {
         const station = store.stations.find((s) => s.id === stationId);
+        const ov = dayOv[stationId];
         const ds = store.daySettings?.[date] || {};
         const opensAt = station?.opensAt || ds.opensAt || store.defaultOpensAt || '10:00';
         const closesAt = station?.closesAt || ds.closesAt || store.defaultClosesAt || '19:00';
-        shifts.push({ date, stationId, stationName: station?.name || stationId, opensAt, closesAt });
+        shifts.push({ date, stationId, stationName: ov?.mergedLabel || station?.name || stationId, opensAt, closesAt });
       }
     }
   }
@@ -307,10 +310,14 @@ function operatorScheduleView(store) {
   const result = {};
   for (const date of [...store.openDays].sort()) {
     result[date] = {};
+    const dayOv = store.daySettings?.[date]?.stationOverrides || {};
     for (const station of store.stations) {
+      const ov = dayOv[station.id];
+      const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
       const wids = sched[date]?.[station.id] || [];
       result[date][station.id] = {
-        stationName: station.name,
+        stationName: ov?.mergedLabel || station.name,
+        hidden: needed === 0,
         opensAt: station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt,
         closesAt: station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt,
         workers: wids.map((id) => workerMap.get(id) || id),
@@ -345,6 +352,7 @@ function adminView(store) {
         stationName: ov?.mergedLabel || station.name,
         needed,
         hidden: needed === 0,
+        mergeWith: ov?.mergeWith || null,
         opensAt: station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt,
         closesAt: station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt,
         workerIds: wids,
@@ -411,13 +419,17 @@ function exportScheduleCSV(store) {
   const workerMap = new Map(store.workers.map((w) => [w.id, w.name]));
   const lines = ['Dátum,Stanovisko,Čas,Brigádnici'];
   for (const date of [...store.openDays].sort()) {
+    const dayOv = store.daySettings?.[date]?.stationOverrides || {};
     for (const station of store.stations) {
+      const ov = dayOv[station.id];
+      const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
+      if (needed === 0) continue;
       const wids = sched[date]?.[station.id] || [];
       const opensAt = station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt;
       const closesAt = station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt;
       lines.push([
         `"${date}"`,
-        `"${station.name}"`,
+        `"${ov?.mergedLabel || station.name}"`,
         `"${opensAt}–${closesAt}"`,
         `"${wids.map((id) => workerMap.get(id) || id).join(', ')}"`,
       ].join(','));
@@ -437,13 +449,17 @@ async function exportScheduleXLSX(store) {
   ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6B35' } };
 
   for (const date of [...store.openDays].sort()) {
+    const dayOv = store.daySettings?.[date]?.stationOverrides || {};
     for (const station of store.stations) {
+      const ov = dayOv[station.id];
+      const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
+      if (needed === 0) continue;
       const wids = sched[date]?.[station.id] || [];
       const opensAt = station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt;
       const closesAt = station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt;
       ws.addRow([
         date,
-        station.name,
+        ov?.mergedLabel || station.name,
         opensAt,
         closesAt,
         wids.map((id) => workerMap.get(id) || id).join(', '),
