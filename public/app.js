@@ -27,6 +27,12 @@
       .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  // 24h time input — native <input type=time> follows OS/browser locale (can show AM/PM),
+  // so we use a plain text field with our own formatting instead.
+  function timeInputHTML(cls, dataAttrs, value, style) {
+    return `<input type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" class="time-input ${cls}" ${dataAttrs} value="${esc(value || '')}"${style ? ` style="${style}"` : ''}>`;
+  }
+
   function fmtShort(iso) {
     if (!iso) return '';
     const d = new Date(iso + 'T12:00:00');
@@ -505,8 +511,8 @@
       const ds = S.daySettings[date] || {};
       return `<tr>
         <td>${fmtShort(date)}</td>
-        <td><input type="time" class="dh-open" data-date="${date}" value="${esc(ds.opensAt || d.defaultOpensAt || '10:00')}" style="width:110px"></td>
-        <td><input type="time" class="dh-close" data-date="${date}" value="${esc(ds.closesAt || d.defaultClosesAt || '19:00')}" style="width:110px"></td>
+        <td>${timeInputHTML('dh-open', `data-date="${date}"`, ds.opensAt || d.defaultOpensAt || '10:00', 'width:110px')}</td>
+        <td>${timeInputHTML('dh-close', `data-date="${date}"`, ds.closesAt || d.defaultClosesAt || '19:00', 'width:110px')}</td>
       </tr>`;
     }).join('');
 
@@ -514,8 +520,8 @@
       <tr>
         <td><input type="text" class="st-name" data-i="${i}" value="${esc(st.name)}" placeholder="Meno stanoviska"></td>
         <td><input type="number" class="st-req" data-i="${i}" value="${st.required||1}" min="1" max="20" style="width:70px"></td>
-        <td><input type="time" class="st-open" data-i="${i}" value="${esc(st.opensAt||'')}" style="width:105px"></td>
-        <td><input type="time" class="st-close" data-i="${i}" value="${esc(st.closesAt||'')}" style="width:105px"></td>
+        <td>${timeInputHTML('st-open', `data-i="${i}"`, st.opensAt||'', 'width:105px')}</td>
+        <td>${timeInputHTML('st-close', `data-i="${i}"`, st.closesAt||'', 'width:105px')}</td>
         <td><button class="btn btn-danger btn-sm st-rm" data-i="${i}">×</button></td>
       </tr>`).join('');
 
@@ -571,11 +577,11 @@
           </div>
           <div class="form-group">
             <label>Štandardný čas od</label>
-            <input type="time" id="cfg-open" value="${esc(d.defaultOpensAt||'10:00')}">
+            ${timeInputHTML('', 'id="cfg-open"', d.defaultOpensAt||'10:00')}
           </div>
           <div class="form-group">
             <label>Štandardný čas do</label>
-            <input type="time" id="cfg-close" value="${esc(d.defaultClosesAt||'19:00')}">
+            ${timeInputHTML('', 'id="cfg-close"', d.defaultClosesAt||'19:00')}
           </div>
         </div>
       </div>
@@ -700,8 +706,8 @@
         const ds = S.daySettings[date] || {};
         return `<tr>
           <td>${fmtShort(date)}</td>
-          <td><input type="time" class="dh-open" data-date="${date}" value="${ds.opensAt||defOpen}" style="width:110px"></td>
-          <td><input type="time" class="dh-close" data-date="${date}" value="${ds.closesAt||defClose}" style="width:110px"></td>
+          <td>${timeInputHTML('dh-open', `data-date="${date}"`, ds.opensAt||defOpen, 'width:110px')}</td>
+          <td>${timeInputHTML('dh-close', `data-date="${date}"`, ds.closesAt||defClose, 'width:110px')}</td>
         </tr>`;
       }).join('');
     }
@@ -714,8 +720,8 @@
         <tr>
           <td><input type="text" class="st-name" data-i="${i}" value="${esc(st.name)}" placeholder="Meno stanoviska"></td>
           <td><input type="number" class="st-req" data-i="${i}" value="${st.required||1}" min="1" max="20" style="width:70px"></td>
-          <td><input type="time" class="st-open" data-i="${i}" value="${esc(st.opensAt||'')}" style="width:105px"></td>
-          <td><input type="time" class="st-close" data-i="${i}" value="${esc(st.closesAt||'')}" style="width:105px"></td>
+          <td>${timeInputHTML('st-open', `data-i="${i}"`, st.opensAt||'', 'width:105px')}</td>
+          <td>${timeInputHTML('st-close', `data-i="${i}"`, st.closesAt||'', 'width:105px')}</td>
           <td><button class="btn btn-danger btn-sm st-rm" data-i="${i}">×</button></td>
         </tr>`).join('');
       body.querySelectorAll('.st-rm').forEach(btn => {
@@ -1493,6 +1499,25 @@
     });
     setTimeout(() => document.getElementById('agent-input')?.focus(), 50);
   }
+
+  // ─── Global 24h time input formatting ───────────────────────────────────────
+  document.addEventListener('input', (e) => {
+    const el = e.target;
+    if (!el.classList || !el.classList.contains('time-input')) return;
+    let digits = el.value.replace(/[^0-9]/g, '').slice(0, 4);
+    let v = digits;
+    if (digits.length >= 3) v = digits.slice(0, 2) + ':' + digits.slice(2);
+    el.value = v;
+  });
+  document.addEventListener('blur', (e) => {
+    const el = e.target;
+    if (!el.classList || !el.classList.contains('time-input')) return;
+    const m = el.value.match(/^(\d{1,2}):?(\d{0,2})$/);
+    if (!m || !el.value) return;
+    const h = Math.min(23, parseInt(m[1] || '0', 10));
+    const mi = Math.min(59, parseInt(m[2] || '0', 10));
+    el.value = String(h).padStart(2, '0') + ':' + String(mi).padStart(2, '0');
+  }, true);
 
   // ─── ROUTER ───────────────────────────────────────────────────────────────
   function init() {
