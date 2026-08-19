@@ -331,9 +331,14 @@
     const tbody = openDays.map(date => {
       const cells = stations.map(st => {
         const cell = sched[date]?.[st.id] || {};
+        if (cell.hidden) {
+          return `<td class="sched-cell" style="background:#f5f5f5;color:#aaa;font-size:.8rem;text-align:center">—</td>`;
+        }
         const names = (cell.workers || []);
         const time = `${cell.opensAt || ''}–${cell.closesAt || ''}`;
+        const label = cell.stationName && cell.stationName !== st.name ? `<div style="font-size:.7rem;font-weight:600;color:var(--orange-dark);margin-bottom:2px">${esc(cell.stationName)}</div>` : '';
         return `<td class="sched-cell">
+          ${label}
           <div class="text-muted" style="font-size:.75rem;margin-bottom:3px">${esc(time)}</div>
           ${names.map(n => `<span class="worker-chip">${esc(n)}</span>`).join('') || '<span class="text-muted">—</span>'}
         </td>`;
