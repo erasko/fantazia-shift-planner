@@ -54,6 +54,8 @@ function defaultStore() {
     stations: [],
     workers: [],
     operators: [],
+    groups: [],
+    activeGroup: null,
     submissions: [],
     manualAssignments: {},
     schedule: {},
@@ -190,6 +192,12 @@ function generateSchedule(store) {
   const assignCount = new Map();
   for (const w of store.workers) assignCount.set(w.id, 0);
 
+  const groupFilter = (() => {
+    if (!store.activeGroup) return null;
+    const grp = (store.groups || []).find(g => g.id === store.activeGroup);
+    return grp ? new Set(grp.workerIds || []) : null;
+  })();
+
   const assignments = {};
   const assignedOnDay = {};
 
@@ -206,6 +214,7 @@ function generateSchedule(store) {
       if (needed === 0) continue;
 
       const eligible = store.workers.filter((w) => {
+        if (groupFilter && !groupFilter.has(w.id)) return false;
         if (!(w.allowedStations || []).includes(station.id)) return false;
         if ((unavailable.get(w.id) || new Set()).has(date)) return false;
         if (assignedOnDay[date].has(w.id)) return false;
@@ -910,6 +919,9 @@ async function handleRequest(req, res) {
         });
       }
 
+      if (Array.isArray(body.groups)) s.groups = body.groups;
+      if (body.activeGroup !== undefined) s.activeGroup = body.activeGroup;
+
       if (Array.isArray(body.operators)) {
         const existById = new Map((s.operators || []).map((o) => [o.id, o]));
         s.operators = body.operators.map((o) => {
@@ -1069,6 +1081,67 @@ async function handleRequest(req, res) {
         worker: r.workerName, days: r.days, reason: r.reason, status: r.status,
       })),
     });
+  }
+
+  // Claude agent chat
+  if (req.method === 'POST' && p === '/api/agent-chat') {
+    if (!requireAdmin(req, res)) return;
+    const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+    if (!ANTHROPIC_API_KEY) return respond(res, 503, { error: 'ANTHROPIC_API_KEY nie je nastavený v prostredí servera.' });
+    const body = await parseBody(req);
+    const question = (body.question || '').trim();
+    if (!question) return respond(res, 400, { error: 'Chýba otázka' });
+
+    const store = await getStore();
+    const sched = effectiveSchedule(store);
+    const workerMap = new Map(store.workers.map(w => [w.id, w.name]));
+    const latestSub = new Map();
+    for (const sub of store.submissions) {
+      const ex = latestSub.get(sub.workerId);
+      if (!ex || sub.submittedAt > ex.submittedAt) latestSub.set(sub.workerId, sub);
+    }
+
+    const schedLines = [];
+    for (const date of [...store.openDays].sort()) {
+      for (const st of store.stations) {
+        const wids = sched[date]?.[st.id] || [];
+        schedLines.push(`${date} | ${st.name}: ${wids.map(id => workerMap.get(id) || id).join(', ') || '—'}`);
+      }
+    }
+
+    const workerLines = store.workers.map(w => {
+      const sub = latestSub.get(w.id);
+      return `${w.name}: ${sub ? `nedostupný: ${(sub.unavailableDays||[]).join(', ') || 'žiadne'}` : 'neodovzdal'}`;
+    });
+
+    const activeGroupName = store.activeGroup
+      ? (store.groups || []).find(g => g.id === store.activeGroup)?.name || store.activeGroup
+      : 'všetci';
+
+    const systemPrompt = `Si asistent pre správu smien v zábavnom parku Fantázia. Odpovedaj stručne v slovenčine.
+
+MESIAC: ${store.month} | OBDOBIE: ${store.periodStart} – ${store.periodEnd}
+STANOVISKÁ: ${store.stations.map(s => s.name).join(', ')}
+BRIGÁDNICI (${store.workers.length}): ${store.workers.map(w => w.name).join(', ')}
+SKUPINY: ${(store.groups||[]).map(g => `${g.name} (${(g.workerIds||[]).length} os.): ${(g.workerIds||[]).map(id => workerMap.get(id)||id).join(', ')}`).join(' | ') || 'žiadne'}
+AKTÍVNA SKUPINA: ${activeGroupName}
+ROZPIS (${store.schedulePublished ? 'zverejnený' : 'nezverejnený'}):
+${schedLines.join('\n') || 'Rozpis ešte nebol vygenerovaný.'}
+DOSTUPNOSŤ:
+${workerLines.join('\n')}`;
+
+    try {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1024, system: systemPrompt, messages: [{ role: 'user', content: question }] }),
+      });
+      const data = await r.json();
+      if (!r.ok) return respond(res, 502, { error: data.error?.message || 'Chyba Anthropic API' });
+      return respond(res, 200, { answer: data.content?.[0]?.text || '' });
+    } catch (e) {
+      return respond(res, 500, { error: e.message });
+    }
   }
 
   if (req.method === 'GET' && p === '/api/export/schedule-print') {
