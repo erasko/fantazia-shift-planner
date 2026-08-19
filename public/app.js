@@ -13,7 +13,10 @@
     localStations: [],
     localWorkers: [],
     localOperators: [],
+    localGroups: [],
+    activeGroup: null,
     schedEdits: {},
+    agentHistory: [],
   };
 
   // ─── Utils ────────────────────────────────────────────────────────────────
@@ -366,6 +369,8 @@
     S.localStations  = JSON.parse(JSON.stringify(d.stations  || []));
     S.localWorkers   = JSON.parse(JSON.stringify(d.workers   || []));
     S.localOperators = JSON.parse(JSON.stringify(d.operators || []));
+    S.localGroups    = JSON.parse(JSON.stringify(d.groups    || []));
+    S.activeGroup    = d.activeGroup || null;
     S.openDays    = new Set(d.openDays || []);
     S.daySettings = JSON.parse(JSON.stringify(d.daySettings || {}));
     S.stationOverrides = {};
@@ -423,8 +428,10 @@
       { id: 'settings',    label: 'Nastavenia' },
       { id: 'submissions', label: 'Odpovede' },
       { id: 'schedule',    label: 'Rozpis' },
+      { id: 'skupiny',     label: 'Skupiny' },
       { id: 'requests',    label: pc ? `Žiadosti (${pc})` : 'Žiadosti' },
       { id: 'exports',     label: 'Exporty' },
+      { id: 'agent',       label: '🤖 Agent' },
     ];
     app.innerHTML = `
       <div class="header">
@@ -462,8 +469,10 @@
       case 'settings':    el.innerHTML = buildSettings();    attachSettings();    break;
       case 'submissions': el.innerHTML = buildSubmissions(); attachSubmissions(); break;
       case 'schedule':    el.innerHTML = buildSchedule();    attachSchedule();    break;
+      case 'skupiny':     el.innerHTML = buildSkupiny();     attachSkupiny();     break;
       case 'requests':    el.innerHTML = buildRequests();    attachRequests();    break;
       case 'exports':     el.innerHTML = buildExports();                          break;
+      case 'agent':       el.innerHTML = buildAgent();       attachAgent();       break;
     }
   }
 
@@ -843,7 +852,7 @@
           defaultOpensAt:       document.getElementById('cfg-open')?.value            || '10:00',
           defaultClosesAt:      document.getElementById('cfg-close')?.value           || '19:00',
           openDays: [...S.openDays].sort(),
-          daySettings, stations, workers, operators,
+          daySettings, stations, workers, operators, groups: S.localGroups, activeGroup: S.activeGroup,
         });
         S.data = updated;
         syncLocal();
@@ -981,8 +990,17 @@
       </tr>`;
     }).join('');
 
+    const groupOpts = `<option value="">Všetci brigádnici</option>` +
+      (d.groups||[]).map(g => `<option value="${esc(g.id)}"${S.activeGroup===g.id?' selected':''}>${esc(g.name)} (${(g.workerIds||[]).length} os.)</option>`).join('');
+
     return `
       <div class="card">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+          <label style="font-weight:600;white-space:nowrap">Aktívna skupina:</label>
+          <select id="active-group-sel" style="width:220px">${groupOpts}</select>
+          <button class="btn btn-secondary btn-sm" id="set-group-btn">Nastaviť</button>
+          ${S.activeGroup ? `<span class="badge badge-info">Filtruje: ${esc((d.groups||[]).find(g=>g.id===S.activeGroup)?.name||'')}</span>` : '<span class="text-muted" style="font-size:.84rem">Všetci</span>'}
+        </div>
         <div class="actions" style="margin-bottom:14px">
           <button class="btn btn-secondary" id="gen-btn">⟳ Generovať rozpis</button>
           <button class="btn btn-primary" id="save-sched">Uložiť zmeny</button>
@@ -1022,6 +1040,22 @@
         document.getElementById('tab-content').innerHTML = buildSchedule();
         attachSchedule();
       });
+    });
+
+    // Set active group
+    document.getElementById('set-group-btn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('set-group-btn');
+      btn.disabled = true;
+      try {
+        const gid = document.getElementById('active-group-sel')?.value || null;
+        await api('PUT', '/api/config', { activeGroup: gid || null });
+        S.activeGroup = gid || null;
+        S.data.activeGroup = gid || null;
+        S.tab = 'schedule'; renderPanel();
+      } catch (e) {
+        setMsg('sched-msg', `<div class="alert alert-error">Chyba: ${esc(e.message)}</div>`);
+        btn.disabled = false;
+      }
     });
 
     // Generate schedule
@@ -1152,6 +1186,159 @@
           <a href="/api/export/backup.json" class="btn btn-secondary">⬇ Záloha všetkých dát (.json)</a>
         </div>
       </div>`;
+  }
+
+  // ─── SKUPINY TAB ──────────────────────────────────────────────────────────
+  function buildSkupiny() {
+    const workers = S.data.workers || [];
+    if (!workers.length) {
+      return `<div class="card"><div class="alert alert-warning">Najprv pridaj brigádnikov v záložke Nastavenia.</div></div>`;
+    }
+
+    const groupCards = S.localGroups.map((grp, gi) => {
+      const inGroup = new Set(grp.workerIds || []);
+      const rows = workers.map(w => `
+        <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer">
+          <input type="checkbox" class="grp-w" data-gi="${gi}" data-wid="${esc(w.id)}" ${inGroup.has(w.id)?'checked':''}>
+          <span>${esc(w.name)}</span>
+        </label>`).join('');
+      const isActive = S.activeGroup === grp.id;
+      return `
+        <div class="card" style="border:2px solid ${isActive ? 'var(--orange)' : 'var(--border)'}">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+            <input type="text" class="grp-name" data-gi="${gi}" value="${esc(grp.name)}" placeholder="Názov skupiny" style="flex:1;font-weight:600">
+            ${isActive ? '<span class="badge badge-success">Aktívna</span>' : ''}
+            <button class="btn btn-danger btn-sm grp-rm" data-gi="${gi}">× Odstrániť</button>
+          </div>
+          <div style="columns:3;column-gap:10px">${rows}</div>
+        </div>`;
+    }).join('');
+
+    return `
+      <div id="grp-msg"></div>
+      <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-secondary" id="add-grp">+ Nová skupina</button>
+        <button class="btn btn-primary" id="save-grps">Uložiť skupiny</button>
+        <span class="text-muted" style="font-size:.84rem">Skupiny určujú kto sa plánuje do rozpisu. Aktívnu skupinu nastavíš v záložke Rozpis.</span>
+      </div>
+      ${groupCards || '<div class="card"><p class="text-muted">Zatiaľ žiadne skupiny. Klikni na "Nová skupina".</p></div>'}`;
+  }
+
+  function attachSkupiny() {
+    function rebuildSkupiny() {
+      const el = document.getElementById('tab-content');
+      if (el) { el.innerHTML = buildSkupiny(); attachSkupiny(); }
+    }
+
+    document.getElementById('add-grp')?.addEventListener('click', () => {
+      S.localGroups.push({ id: 'grp_' + Date.now(), name: '', workerIds: [] });
+      rebuildSkupiny();
+    });
+
+    document.querySelectorAll('.grp-rm').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const gi = +btn.dataset.gi;
+        const grp = S.localGroups[gi];
+        if (S.activeGroup === grp?.id) S.activeGroup = null;
+        S.localGroups.splice(gi, 1);
+        rebuildSkupiny();
+      });
+    });
+
+    document.querySelectorAll('.grp-w').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const gi = +cb.dataset.gi;
+        const wid = cb.dataset.wid;
+        if (!S.localGroups[gi].workerIds) S.localGroups[gi].workerIds = [];
+        if (cb.checked) {
+          if (!S.localGroups[gi].workerIds.includes(wid)) S.localGroups[gi].workerIds.push(wid);
+        } else {
+          S.localGroups[gi].workerIds = S.localGroups[gi].workerIds.filter(id => id !== wid);
+        }
+      });
+    });
+
+    document.getElementById('save-grps')?.addEventListener('click', async () => {
+      const btn = document.getElementById('save-grps');
+      btn.disabled = true; btn.textContent = 'Ukladám...';
+      const groups = S.localGroups.map((g, gi) => ({
+        id: g.id,
+        name: document.querySelector(`.grp-name[data-gi="${gi}"]`)?.value?.trim() || g.name,
+        workerIds: g.workerIds || [],
+      })).filter(g => g.name);
+      try {
+        await api('PUT', '/api/config', { groups, activeGroup: S.activeGroup });
+        S.data = await api('GET', '/api/admin');
+        syncLocal(); S.tab = 'skupiny'; renderPanel();
+        document.getElementById('grp-msg').innerHTML = '<div class="alert alert-success">✓ Skupiny boli uložené.</div>';
+      } catch (e) {
+        setMsg('grp-msg', `<div class="alert alert-error">Chyba: ${esc(e.message)}</div>`);
+        btn.disabled = false; btn.textContent = 'Uložiť skupiny';
+      }
+    });
+  }
+
+  // ─── AGENT TAB ────────────────────────────────────────────────────────────
+  function buildAgent() {
+    const msgs = S.agentHistory.map(m => {
+      if (m.role === 'user') {
+        return `<div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+          <div style="background:var(--brand-navy);color:#fff;padding:9px 14px;border-radius:14px 14px 4px 14px;max-width:75%;font-size:.88rem">${esc(m.text)}</div>
+        </div>`;
+      }
+      return `<div style="display:flex;justify-content:flex-start;margin-bottom:8px">
+        <div style="background:#f0f4ff;color:var(--text);padding:9px 14px;border-radius:14px 14px 14px 4px;max-width:85%;font-size:.88rem;white-space:pre-wrap">${esc(m.text)}</div>
+      </div>`;
+    }).join('');
+
+    return `
+      <div class="card">
+        <div class="section-title">🤖 Claude Agent — asistent pre rozvrh</div>
+        <p class="text-muted" style="margin-bottom:14px">Pýtaj sa na brigádnikov, rozpis, dostupnosť... Agent vidí živé dáta z appky.</p>
+        <div id="agent-chat" style="min-height:200px;max-height:420px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;background:#fafafa">
+          ${msgs || '<p class="text-muted" style="text-align:center;padding:30px 0">Začni konverzáciu — napíš otázku dole.</p>'}
+        </div>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="agent-input" placeholder="Napr.: Kto je dostupný 5. septembra?" style="flex:1">
+          <button class="btn btn-primary" id="agent-send">Odoslať</button>
+        </div>
+        <div id="agent-msg" style="margin-top:6px"></div>
+      </div>`;
+  }
+
+  function attachAgent() {
+    const chatEl = document.getElementById('agent-chat');
+    if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
+
+    async function sendMessage() {
+      const inp = document.getElementById('agent-input');
+      const question = inp?.value?.trim();
+      if (!question) return;
+      inp.value = '';
+      const btn = document.getElementById('agent-send');
+      btn.disabled = true; btn.textContent = '...';
+
+      S.agentHistory.push({ role: 'user', text: question });
+      document.getElementById('tab-content').innerHTML = buildAgent();
+      attachAgent();
+      const chat = document.getElementById('agent-chat');
+      if (chat) chat.scrollTop = chat.scrollHeight;
+
+      try {
+        const r = await api('POST', '/api/agent-chat', { question });
+        S.agentHistory.push({ role: 'assistant', text: r.answer });
+      } catch (e) {
+        S.agentHistory.push({ role: 'assistant', text: `Chyba: ${e.message}` });
+      }
+      document.getElementById('tab-content').innerHTML = buildAgent();
+      attachAgent();
+    }
+
+    document.getElementById('agent-send')?.addEventListener('click', sendMessage);
+    document.getElementById('agent-input')?.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    });
+    setTimeout(() => document.getElementById('agent-input')?.focus(), 50);
   }
 
   // ─── ROUTER ───────────────────────────────────────────────────────────────
