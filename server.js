@@ -813,7 +813,6 @@ function exportSchedulePrintHTML(store) {
     body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .week-page { padding: 12px 16px 8px; }
     .doc-title { font-size: 17px; margin-bottom: 10px; }
-    .page-footer { position: fixed; bottom: 4mm; width: 100%; }
     @page { size: A4 landscape; margin: 10mm 12mm; }
   }
 </style>
