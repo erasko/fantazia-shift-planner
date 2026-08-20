@@ -21,6 +21,7 @@ sleep 2
 - Otázky o tom KTO pracuje KDE a KEDY → fetch schedule
 - Otázky o brigádnikoch, odpovediach, dostupnosti → fetch submissions
 - Otázky o žiadostiach o zmenu → fetch changeRequests
+- Otázky "kto má koľko zmien/dní/hodín" → použi pole `shiftCounts` z /api/agent-data (už spočítané, nepočítaj ručne zo `schedule`)
 - Všeobecné otázky o kóde → nepotrebné fetchy
 
 ## Premenné prostredia

@@ -1138,12 +1138,18 @@ async function handleRequest(req, res) {
         scheduleTable[date][station.name] = wids.map((id) => workerMap.get(id) || id);
       }
     }
+    const hoursMap = computeWorkerHours(store);
     return respond(res, 200, {
       month: store.month,
       periodStart: store.periodStart,
       periodEnd: store.periodEnd,
       schedulePublished: store.schedulePublished,
       stations: store.stations.map((s) => s.name),
+      shiftCounts: store.workers.map((w) => ({
+        name: w.name,
+        shifts: hoursMap.get(w.id)?.shifts || 0,
+        hours: Number((hoursMap.get(w.id)?.hours || 0).toFixed(1)),
+      })).sort((a, b) => b.hours - a.hours),
       workers: store.workers.map((w) => ({
         name: w.name,
         submitted: !!latestSub.get(w.id),
@@ -1191,6 +1197,12 @@ async function handleRequest(req, res) {
       ? (store.groups || []).find(g => g.id === store.activeGroup)?.name || store.activeGroup
       : 'všetci';
 
+    const hoursMap = computeWorkerHours(store);
+    const hoursLines = store.workers
+      .map(w => ({ name: w.name, ...(hoursMap.get(w.id) || { shifts: 0, hours: 0 }) }))
+      .sort((a, b) => b.hours - a.hours)
+      .map(r => `${r.name}: ${r.shifts} zmien, ${r.hours.toFixed(1)} hodín`);
+
     const systemPrompt = `Si asistent pre správu smien v zábavnom parku Fantázia. Odpovedaj stručne v slovenčine.
 
 MESIAC: ${store.month} | OBDOBIE: ${store.periodStart} – ${store.periodEnd}
@@ -1198,6 +1210,8 @@ STANOVISKÁ: ${store.stations.map(s => s.name).join(', ')}
 BRIGÁDNICI (${store.workers.length}): ${store.workers.map(w => w.name).join(', ')}
 SKUPINY: ${(store.groups||[]).map(g => `${g.name} (${(g.workerIds||[]).length} os.): ${(g.workerIds||[]).map(id => workerMap.get(id)||id).join(', ')}`).join(' | ') || 'žiadne'}
 AKTÍVNA SKUPINA: ${activeGroupName}
+POČET ZMIEN A HODÍN ZA MESIAC (už spočítané, použi tieto čísla, nepočítaj znova zo surového rozpisu nižšie):
+${hoursLines.join('\n') || 'Rozpis ešte nebol vygenerovaný.'}
 ROZPIS (${store.schedulePublished ? 'zverejnený' : 'nezverejnený'}):
 ${schedLines.join('\n') || 'Rozpis ešte nebol vygenerovaný.'}
 DOSTUPNOSŤ:
