@@ -61,6 +61,7 @@ function defaultStore() {
     schedule: {},
     schedulePublished: false,
     changeRequests: [],
+    hourLogs: [],
   };
 }
 
@@ -185,6 +186,38 @@ function getShiftHours(store, date, station) {
   const [ch, cm] = closesAt.split(':').map(Number);
   const mins = (ch * 60 + cm) - (oh * 60 + om);
   return mins > 0 ? mins / 60 : 0;
+}
+
+function hhmmToMinutes(hhmm) {
+  const [h, m] = (hhmm || '0:00').split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
+function hoursBetween(start, end) {
+  const mins = hhmmToMinutes(end) - hhmmToMinutes(start);
+  return mins > 0 ? mins / 60 : 0;
+}
+
+// Lean per-date/station schedule table (id + name) used by workers to pick
+// who they're substituting for, and by operators to label hour-log entries.
+function publicScheduleTable(store) {
+  const sched = effectiveSchedule(store);
+  const table = {};
+  for (const date of [...store.openDays].sort()) {
+    const dayOv = store.daySettings?.[date]?.stationOverrides || {};
+    table[date] = {};
+    for (const station of store.stations) {
+      const ov = dayOv[station.id];
+      const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
+      if (needed === 0) continue;
+      const wids = sched[date]?.[station.id] || [];
+      table[date][station.id] = {
+        stationName: ov?.mergedLabel || station.name,
+        workers: wids.map((id) => ({ id, name: store.workers.find((w) => w.id === id)?.name || id })),
+      };
+    }
+  }
+  return table;
 }
 
 function generateSchedule(store) {
@@ -312,6 +345,8 @@ function publicWorkerStore(store, worker) {
     submittedAt: latestSub?.submittedAt || null,
     confirmedSchedule: workerScheduleData(store, worker),
     pendingRequests,
+    fullSchedule: store.schedulePublished ? publicScheduleTable(store) : null,
+    myHourLogs: (store.hourLogs || []).filter((h) => h.workerId === worker.id),
   };
 }
 
@@ -439,6 +474,60 @@ function exportHoursCSV(store) {
     lines.push([`"${w.name}"`, entry.shifts, entry.hours.toFixed(1)].join(','));
   }
   return lines.join('\n');
+}
+
+// Actual reported+approved hours report (worker × day grid + discrepancy sheet)
+async function exportActualHoursXLSX(store) {
+  const wb = new ExcelJS.Workbook();
+  const logs = store.hourLogs || [];
+  const approvedLogs = logs.filter((h) => h.status === 'approved');
+  const sortedDays = [...store.openDays].sort();
+
+  const ws = wb.addWorksheet('Hodiny');
+  const headerRow = ['Brigádnik', ...sortedDays.map((d) => d.slice(8, 10) + '.' + d.slice(5, 7) + '.'), 'Spolu'];
+  ws.addRow(headerRow);
+  ws.getRow(1).font = { bold: true };
+  ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6B35' } };
+
+  for (const w of store.workers) {
+    const byDay = new Map();
+    let total = 0;
+    for (const log of approvedLogs) {
+      if (log.workerId !== w.id) continue;
+      const h = hoursBetween(log.approvedStart, log.approvedEnd);
+      byDay.set(log.date, (byDay.get(log.date) || 0) + h);
+      total += h;
+    }
+    if (total === 0) continue;
+    const row = [w.name, ...sortedDays.map((d) => (byDay.has(d) ? Number(byDay.get(d).toFixed(1)) : '')), Number(total.toFixed(1))];
+    ws.addRow(row);
+  }
+  ws.columns.forEach((col, i) => { col.width = i === 0 ? 22 : 8; });
+  ws.getColumn(headerRow.length).font = { bold: true };
+
+  const wsDisc = wb.addWorksheet('Rozpory');
+  wsDisc.addRow(['Brigádnik', 'Dátum', 'Stanovisko', 'Nahlásené', 'Schválené', 'Rozdiel (h)', 'Schválil']);
+  wsDisc.getRow(1).font = { bold: true };
+  wsDisc.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6B35' } };
+
+  const stationMap = new Map(store.stations.map((s) => [s.id, s.name]));
+  for (const log of approvedLogs) {
+    if (log.reportedStart === log.approvedStart && log.reportedEnd === log.approvedEnd) continue;
+    const reportedH = hoursBetween(log.reportedStart, log.reportedEnd);
+    const approvedH = hoursBetween(log.approvedStart, log.approvedEnd);
+    wsDisc.addRow([
+      log.workerName,
+      log.date,
+      stationMap.get(log.stationId) || log.stationId,
+      `${log.reportedStart}–${log.reportedEnd}`,
+      `${log.approvedStart}–${log.approvedEnd}`,
+      Number((approvedH - reportedH).toFixed(1)),
+      log.approvedByName || '',
+    ]);
+  }
+  wsDisc.columns.forEach((col) => { col.width = 20; });
+
+  return wb.xlsx.writeBuffer();
 }
 
 function exportSubmissionsCSV(store) {
@@ -869,6 +958,60 @@ async function handleRequest(req, res) {
     return respond(res, 200, { ok: true });
   }
 
+  // Worker — report hours worked (own shift, or as a substitute for someone else)
+  const workerHoursM = p.match(/^\/api\/worker\/([a-zA-Z0-9]+)\/hours$/);
+  if (workerHoursM && req.method === 'POST') {
+    const store = await getStore();
+    const worker = store.workers.find((w) => w.token === workerHoursM[1]);
+    if (!worker) return respond(res, 404, { error: 'Odkaz neexistuje' });
+    if (!store.schedulePublished) return respond(res, 400, { error: 'Rozpis ešte nie je zverejnený' });
+    const body = await parseBody(req);
+    const date = body.date;
+    const stationId = body.stationId;
+    const substituteFor = body.substituteFor || null;
+    const start = body.start;
+    const end = body.end;
+    if (!date || !stationId || !start || !end) return respond(res, 400, { error: 'Chýbajú údaje' });
+    if (!store.openDays.includes(date)) return respond(res, 400, { error: 'Neplatný dátum' });
+
+    const existing = (store.hourLogs || []).find(
+      (h) => h.date === date && h.stationId === stationId && h.workerId === worker.id
+    );
+    if (existing && existing.status === 'approved') {
+      return respond(res, 409, { error: 'Táto zmena už bola schválená prevádzkarom. Kontaktuj ho, ak treba opraviť čas.' });
+    }
+
+    await mutateStore((s) => {
+      if (!s.hourLogs) s.hourLogs = [];
+      const substituteWorker = substituteFor ? s.workers.find((w) => w.id === substituteFor) : null;
+      const entry = {
+        id: existing ? existing.id : generateToken(),
+        date,
+        stationId,
+        workerId: worker.id,
+        workerName: worker.name,
+        substituteFor: substituteFor || null,
+        substituteForName: substituteWorker?.name || null,
+        reportedStart: start,
+        reportedEnd: end,
+        reportedAt: new Date().toISOString(),
+        status: 'pending',
+        approvedStart: null,
+        approvedEnd: null,
+        approvedBy: null,
+        approvedByName: null,
+        approvedAt: null,
+      };
+      const idx = s.hourLogs.findIndex((h) => h.id === entry.id);
+      if (idx >= 0) s.hourLogs[idx] = entry;
+      else s.hourLogs.push(entry);
+    });
+
+    const fresh = await getStore();
+    const freshWorker = fresh.workers.find((w) => w.id === worker.id);
+    return respond(res, 200, publicWorkerStore(fresh, freshWorker));
+  }
+
   // Operator — GET schedule
   const operatorM = p.match(/^\/api\/operator\/([a-zA-Z0-9]+)$/);
   if (operatorM && req.method === 'GET') {
@@ -876,6 +1019,7 @@ async function handleRequest(req, res) {
     const op = (store.operators || []).find((o) => o.token === operatorM[1]);
     if (!op) return respond(res, 404, { error: 'Odkaz neexistuje' });
     return respond(res, 200, {
+      operatorId: op.id,
       operatorName: op.name,
       hasPassword: !!op.passwordHash,
       schedulePublished: store.schedulePublished,
@@ -883,6 +1027,7 @@ async function handleRequest(req, res) {
       stations: store.stations,
       openDays: [...store.openDays].sort(),
       schedule: operatorScheduleView(store),
+      hourLogs: store.hourLogs || [],
     });
   }
 
@@ -901,6 +1046,32 @@ async function handleRequest(req, res) {
       return respond(res, 401, { error: 'Nesprávne heslo' });
     }
     return respond(res, 200, { ok: true });
+  }
+
+  // Operator — approve an hour log entry
+  const opApproveM = p.match(/^\/api\/operator\/([a-zA-Z0-9]+)\/hours\/([^/]+)\/approve$/);
+  if (opApproveM && req.method === 'POST') {
+    const store = await getStore();
+    const op = (store.operators || []).find((o) => o.token === opApproveM[1]);
+    if (!op) return respond(res, 404, { error: 'Odkaz neexistuje' });
+    const body = await parseBody(req);
+    const start = body.start;
+    const end = body.end;
+    if (!start || !end) return respond(res, 400, { error: 'Chýba čas' });
+
+    await mutateStore((s) => {
+      const entry = (s.hourLogs || []).find((h) => h.id === opApproveM[2]);
+      if (!entry) return;
+      entry.approvedStart = start;
+      entry.approvedEnd = end;
+      entry.approvedBy = op.id;
+      entry.approvedByName = op.name;
+      entry.approvedAt = new Date().toISOString();
+      entry.status = 'approved';
+    });
+
+    const fresh = await getStore();
+    return respond(res, 200, { ok: true, hourLogs: fresh.hourLogs || [] });
   }
 
   // Admin — full store
@@ -1077,6 +1248,14 @@ async function handleRequest(req, res) {
     const store = await getStore();
     res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="hodiny.csv"' });
     return res.end('﻿' + exportHoursCSV(store));
+  }
+
+  if (req.method === 'GET' && p === '/api/export/actual-hours.xlsx') {
+    if (!requireAdmin(req, res)) return;
+    const store = await getStore();
+    const buffer = await exportActualHoursXLSX(store);
+    res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="skutocne-hodiny.xlsx"' });
+    return res.end(buffer);
   }
 
   if (req.method === 'GET' && p === '/api/export/schedule.csv') {
