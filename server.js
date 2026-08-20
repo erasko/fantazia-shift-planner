@@ -1005,10 +1005,15 @@ async function handleRequest(req, res) {
   // Admin — generate schedule
   if (req.method === 'PUT' && p === '/api/schedule') {
     if (!requireAdmin(req, res)) return;
+    const body = await parseBody(req);
     await mutateStore((s) => {
       if (!s.schedule) s.schedule = {};
       s.schedule[s.month] = generateSchedule(s);
       s.schedulePublished = false;
+      if (body.discardManual) {
+        if (!s.manualAssignments) s.manualAssignments = {};
+        s.manualAssignments[s.month] = {};
+      }
     });
     return respond(res, 200, adminView(await getStore()));
   }

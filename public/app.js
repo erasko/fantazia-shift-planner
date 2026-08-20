@@ -33,6 +33,27 @@
     return `<input type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" class="time-input ${cls}" ${dataAttrs} value="${esc(value || '')}"${style ? ` style="${style}"` : ''}>`;
   }
 
+  function showGenerateConfirmModal({ onKeep, onDiscard }) {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(12,35,114,0.45);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px';
+    overlay.innerHTML = `
+      <div class="card" style="max-width:440px;width:100%;margin:0">
+        <div class="section-title">Máš ručné úpravy v rozpise</div>
+        <p style="margin-bottom:16px;font-size:.9rem">Niektoré zmeny si už uložil(a) ručne. Čo chceš urobiť pri generovaní nového rozpisu?</p>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button class="btn btn-primary" id="gm-keep" style="width:100%">Zachovať ručné úpravy</button>
+          <button class="btn btn-danger" id="gm-discard" style="width:100%">Zahodiť ručné úpravy a vygenerovať úplne nový</button>
+          <button class="btn btn-secondary" id="gm-cancel" style="width:100%">Zrušiť</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.querySelector('#gm-keep').addEventListener('click', () => { close(); onKeep(); });
+    overlay.querySelector('#gm-discard').addEventListener('click', () => { close(); onDiscard(); });
+    overlay.querySelector('#gm-cancel').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  }
+
   function fmtShort(iso) {
     if (!iso) return '';
     const d = new Date(iso + 'T12:00:00');
@@ -1122,16 +1143,29 @@
     });
 
     // Generate schedule
-    document.getElementById('gen-btn')?.addEventListener('click', async () => {
+    function hasManualAssignments() {
+      const ma = S.data.manualAssignments?.[S.data.month] || {};
+      return Object.values(ma).some(dayAssign => Object.keys(dayAssign || {}).length > 0);
+    }
+
+    async function runGenerate(discardManual) {
       const btn = document.getElementById('gen-btn');
       btn.disabled = true; btn.textContent = 'Generujem...';
       try {
-        S.data = await api('PUT', '/api/schedule');
+        S.data = await api('PUT', '/api/schedule', { discardManual });
         syncLocal(); S.tab = 'schedule'; renderPanel();
       } catch (e) {
         setMsg('sched-msg', `<div class="alert alert-error">Chyba: ${esc(e.message)}</div>`);
         btn.disabled = false; btn.textContent = '⟳ Generovať rozpis';
       }
+    }
+
+    document.getElementById('gen-btn')?.addEventListener('click', () => {
+      if (!hasManualAssignments()) { runGenerate(false); return; }
+      showGenerateConfirmModal({
+        onKeep: () => runGenerate(false),
+        onDiscard: () => runGenerate(true),
+      });
     });
 
     // Save manual assignments
