@@ -584,42 +584,26 @@ function exportSchedulePrintHTML(store) {
       ? `TÝŽDEŇ ${from} ${fromYear} &mdash; ${to} ${toYear}`
       : `TÝŽDEŇ ${from} ${fromYear} &mdash; ${to} ${toYear}`;
 
-    // pad to 7 columns (Mon-Sun) — fill missing days with empty headers
-    const allWeekDays = [];
-    const cur = new Date(fromDate);
-    const dayOfWeek = cur.getDay() || 7;
-    cur.setDate(cur.getDate() - dayOfWeek + 1); // go to Monday
-    for (let i = 0; i < 7; i++) {
-      const iso = cur.toISOString().slice(0, 10);
-      allWeekDays.push(days.includes(iso) ? iso : null);
-      cur.setDate(cur.getDate() + 1);
-    }
-    // if all 7 are null except some, just use actual days (no padding for short weeks)
-    const colDays = allWeekDays.every(d => d === null) ? days : allWeekDays;
-    const hasEmptyCols = colDays.some(d => d === null);
-
-    let colHeaders = `<th class="stn-col">Stanovisko</th>`;
-    for (const d of colDays) {
-      if (d === null) {
-        colHeaders += `<th class="col-empty"></th>`;
-      } else {
-        colHeaders += `<th><span class="day-name">${fmtDayName(d)}</span><br>${fmtDay(d)}</th>`;
-      }
-    }
-
-    let rows = '';
-    for (const station of store.stations) {
-      // check if this station is hidden on ALL days of this week → skip entire row
-      const allHidden = colDays.every((d) => {
-        if (!d) return true;
+    // skip stations that are hidden on every day of this week
+    const stationsToShow = store.stations.filter((station) => {
+      return !days.every((d) => {
         const ov = store.daySettings?.[d]?.stationOverrides?.[station.id];
         return ov !== undefined && (ov.required ?? 1) === 0;
       });
-      if (allHidden) continue;
+    });
 
-      // determine per-day label and visibility
-      const rowCells = colDays.map((d) => {
-        if (d === null) return `<td class="col-empty"></td>`;
+    let colHeaders = `<th class="stn-col">Deň</th>`;
+    for (const station of stationsToShow) {
+      // station label: use mergedLabel from any day that has it (first found)
+      const stnLabel = days.reduce((lbl, d) => {
+        return lbl || store.daySettings?.[d]?.stationOverrides?.[station.id]?.mergedLabel || null;
+      }, null) || station.name;
+      colHeaders += `<th>${stnLabel}</th>`;
+    }
+
+    let rows = '';
+    for (const d of days) {
+      const rowCells = stationsToShow.map((station) => {
         const ov = store.daySettings?.[d]?.stationOverrides?.[station.id];
         const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
         if (needed === 0) return `<td class="col-empty" title="Zlúčené/zatvorené"></td>`;
@@ -633,13 +617,7 @@ function exportSchedulePrintHTML(store) {
         return `<td>${parts.join('')}</td>`;
       });
 
-      // station label: use mergedLabel from any day that has it (first found)
-      const stnLabel = colDays.reduce((lbl, d) => {
-        if (lbl || !d) return lbl;
-        return store.daySettings?.[d]?.stationOverrides?.[station.id]?.mergedLabel || null;
-      }, null) || station.name;
-
-      rows += `<tr><td class="stn-name">${stnLabel}</td>${rowCells.join('')}</tr>`;
+      rows += `<tr><td class="stn-name"><span class="day-name">${fmtDayName(d)}</span><br>${fmtDay(d)}</td>${rowCells.join('')}</tr>`;
     }
 
     pages += `
