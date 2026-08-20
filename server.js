@@ -198,6 +198,37 @@ function hoursBetween(start, end) {
   return mins > 0 ? mins / 60 : 0;
 }
 
+// Hour logs shown to an operator must never reveal what the worker reported —
+// only the operator's own independently-entered time counts, so discrepancies
+// (visible only in the admin export) can't be colluded around. Strip the
+// reported time server-side and offer the *planned* schedule time instead,
+// so the approval form isn't pre-filled with the worker's claim.
+function sanitizeHourLogsForOperator(store) {
+  const stationMap = new Map(store.stations.map((s) => [s.id, s]));
+  return (store.hourLogs || []).map((h) => {
+    const station = stationMap.get(h.stationId);
+    const ds = store.daySettings?.[h.date] || {};
+    const plannedStart = station?.opensAt || ds.opensAt || store.defaultOpensAt || '10:00';
+    const plannedEnd = station?.closesAt || ds.closesAt || store.defaultClosesAt || '19:00';
+    return {
+      id: h.id,
+      date: h.date,
+      stationId: h.stationId,
+      workerId: h.workerId,
+      workerName: h.workerName,
+      substituteFor: h.substituteFor,
+      substituteForName: h.substituteForName,
+      status: h.status,
+      plannedStart,
+      plannedEnd,
+      approvedStart: h.approvedStart,
+      approvedEnd: h.approvedEnd,
+      approvedByName: h.approvedByName,
+      approvedAt: h.approvedAt,
+    };
+  });
+}
+
 // Lean per-date/station schedule table (id + name) used by workers to pick
 // who they're substituting for, and by operators to label hour-log entries.
 function publicScheduleTable(store) {
@@ -1027,7 +1058,7 @@ async function handleRequest(req, res) {
       stations: store.stations,
       openDays: [...store.openDays].sort(),
       schedule: operatorScheduleView(store),
-      hourLogs: store.hourLogs || [],
+      hourLogs: sanitizeHourLogsForOperator(store),
     });
   }
 
@@ -1071,7 +1102,7 @@ async function handleRequest(req, res) {
     });
 
     const fresh = await getStore();
-    return respond(res, 200, { ok: true, hourLogs: fresh.hourLogs || [] });
+    return respond(res, 200, { ok: true, hourLogs: sanitizeHourLogsForOperator(fresh) });
   }
 
   // Admin — full store

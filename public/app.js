@@ -528,13 +528,11 @@
       const stnName = esc(stationMap.get(h.stationId) || h.stationId);
 
       if (h.status === 'approved') {
-        const diff = (h.reportedStart !== h.approvedStart || h.reportedEnd !== h.approvedEnd);
         return `<tr>
           <td>${fmtShort(h.date)}</td>
           <td>${stnName}</td>
           <td>${whoLabel}</td>
-          <td>${esc(h.reportedStart)}–${esc(h.reportedEnd)}</td>
-          <td><span class="badge badge-success">✓ ${esc(h.approvedStart)}–${esc(h.approvedEnd)}</span>${diff ? ' <span class="badge badge-warning">⚠ rozpor</span>' : ''}</td>
+          <td><span class="badge badge-success">✓ ${esc(h.approvedStart)}–${esc(h.approvedEnd)}</span></td>
           <td class="text-muted" style="font-size:.8rem">${esc(h.approvedByName || '')}</td>
         </tr>`;
       }
@@ -543,12 +541,11 @@
         <td>${fmtShort(h.date)}</td>
         <td>${stnName}</td>
         <td>${whoLabel}</td>
-        <td>${esc(h.reportedStart)}–${esc(h.reportedEnd)}</td>
         <td>
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-            ${timeInputHTML('ap-start', `data-id="${esc(h.id)}"`, h.reportedStart, 'width:80px')}
+            ${timeInputHTML('ap-start', `data-id="${esc(h.id)}"`, h.plannedStart, 'width:80px')}
             <span>–</span>
-            ${timeInputHTML('ap-end', `data-id="${esc(h.id)}"`, h.reportedEnd, 'width:80px')}
+            ${timeInputHTML('ap-end', `data-id="${esc(h.id)}"`, h.plannedEnd, 'width:80px')}
             <button class="btn btn-success btn-sm ap-hrs-btn" data-id="${esc(h.id)}">Schváliť</button>
           </div>
         </td>
@@ -558,10 +555,11 @@
 
     return `
       <div class="card">
+        <p class="text-muted" style="margin-bottom:12px;font-size:.84rem">Časy zadávaš nezávisle podľa vlastnej vedomosti o odpracovaných hodinách — systém ti nezobrazuje, čo nahlásil brigádnik.</p>
         <div id="op-hrs-msg"></div>
         <div style="overflow-x:auto">
           <table>
-            <thead><tr><th>Dátum</th><th>Stanovisko</th><th>Brigádnik</th><th>Nahlásené</th><th>Stav / Schválenie</th><th>Schválil</th></tr></thead>
+            <thead><tr><th>Dátum</th><th>Stanovisko</th><th>Brigádnik</th><th>Tvoje schválenie</th><th>Schválil</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
