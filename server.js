@@ -178,6 +178,10 @@ function isAvailabilityLocked(store) {
   return new Date() > new Date(store.availabilityDeadline);
 }
 
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function getShiftHours(store, date, station) {
   const ds = store.daySettings?.[date] || {};
   const opensAt = station?.opensAt || ds.opensAt || store.defaultOpensAt || '10:00';
@@ -227,6 +231,26 @@ function sanitizeHourLogsForOperator(store) {
       approvedAt: h.approvedAt,
     };
   });
+}
+
+// A worker must never see what the operator approved — otherwise they'd learn
+// the operator's pattern (e.g. "always rounds down 15 min") and adjust future
+// reports around it. They only see their own reported value and the status.
+function sanitizeHourLogsForWorker(store, workerId) {
+  return (store.hourLogs || [])
+    .filter((h) => h.workerId === workerId)
+    .map((h) => ({
+      id: h.id,
+      date: h.date,
+      stationId: h.stationId,
+      workerId: h.workerId,
+      workerName: h.workerName,
+      substituteFor: h.substituteFor,
+      substituteForName: h.substituteForName,
+      reportedStart: h.reportedStart,
+      reportedEnd: h.reportedEnd,
+      status: h.status,
+    }));
 }
 
 // Lean per-date/station schedule table (id + name) used by workers to pick
@@ -377,7 +401,7 @@ function publicWorkerStore(store, worker) {
     confirmedSchedule: workerScheduleData(store, worker),
     pendingRequests,
     fullSchedule: store.schedulePublished ? publicScheduleTable(store) : null,
-    myHourLogs: (store.hourLogs || []).filter((h) => h.workerId === worker.id),
+    myHourLogs: sanitizeHourLogsForWorker(store, worker.id),
   };
 }
 
@@ -1007,8 +1031,11 @@ async function handleRequest(req, res) {
     const existing = (store.hourLogs || []).find(
       (h) => h.date === date && h.stationId === stationId && h.workerId === worker.id
     );
-    if (existing && existing.status === 'approved') {
-      return respond(res, 409, { error: 'Táto zmena už bola schválená prevádzkarom. Kontaktuj ho, ak treba opraviť čas.' });
+    // First-time entries can only be logged on the actual day of the shift.
+    // Corrections to an already-reported entry (pending or approved) are
+    // always allowed — they just re-open it for a fresh operator approval.
+    if (!existing && date !== todayISO()) {
+      return respond(res, 400, { error: 'Hodiny môžeš zapísať len v deň zmeny.' });
     }
 
     await mutateStore((s) => {

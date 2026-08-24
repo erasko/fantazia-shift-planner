@@ -17,7 +17,7 @@
     activeGroup: null,
     schedEdits: {},
     agentHistory: [],
-    opTab: 'rozpis',
+    opTab: 'dnes',
   };
 
   // ─── Utils ────────────────────────────────────────────────────────────────
@@ -60,6 +60,12 @@
     const d = new Date(iso + 'T12:00:00');
     const days = ['Ne','Po','Ut','St','Šv','Pi','So'];
     return `${d.getDate()}. ${d.getMonth()+1}. (${days[d.getDay()]})`;
+  }
+
+  function localTodayISO() {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
   }
 
   function fmtFull(iso) {
@@ -206,21 +212,33 @@
     }
     function buildShiftHoursBlock(s) {
       const log = findMyLog(s.date, s.stationId);
-      if (log?.status === 'approved') {
-        const diff = (log.reportedStart !== log.approvedStart || log.reportedEnd !== log.approvedEnd);
-        return `<div style="margin-top:6px">
-          <span class="badge badge-success">✓ Schválené ${esc(log.approvedStart)}–${esc(log.approvedEnd)}</span>
-          ${diff ? `<span class="text-muted" style="font-size:.78rem;margin-left:6px">(nahlásil si ${esc(log.reportedStart)}–${esc(log.reportedEnd)})</span>` : ''}
+      const today = localTodayISO();
+
+      // Already reported — locked. Only an explicit correction re-opens it.
+      if (log) {
+        const statusBadge = log.status === 'approved'
+          ? '<span class="badge badge-success">✓ Schválené</span>'
+          : '<span class="badge badge-warning">⏳ Čaká na schválenie</span>';
+        return `<div style="margin-top:6px" data-corr-wrap="${s.date}|${esc(s.stationId)}">
+          ${statusBadge}
+          <span class="text-muted" style="font-size:.8rem;margin-left:6px">Nahlásil(a) si ${esc(log.reportedStart)}–${esc(log.reportedEnd)}</span>
+          <button class="btn btn-secondary btn-sm hrs-corr" data-date="${s.date}" data-st="${esc(s.stationId)}" style="margin-left:8px">Poslať opravu</button>
         </div>`;
       }
-      const startVal = log?.reportedStart || s.opensAt;
-      const endVal = log?.reportedEnd || s.closesAt;
+
+      // Not reported yet — entry only on the day of the shift.
+      if (s.date > today) {
+        return `<div style="margin-top:6px"><span class="text-muted" style="font-size:.82rem">Hodiny zapíšeš v deň zmeny.</span></div>`;
+      }
+      if (s.date < today) {
+        return `<div style="margin-top:6px"><span class="badge badge-danger">Hodiny neboli zapísané</span>
+          <span class="text-muted" style="font-size:.8rem;margin-left:6px">Kontaktuj prevádzkara.</span></div>`;
+      }
       return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
-        ${log?.status === 'pending' ? '<span class="badge badge-warning">⏳ Čaká na schválenie</span>' : ''}
-        ${timeInputHTML('hrs-start', `data-date="${s.date}" data-st="${esc(s.stationId)}"`, startVal, 'width:90px')}
+        ${timeInputHTML('hrs-start', `data-date="${s.date}" data-st="${esc(s.stationId)}"`, s.opensAt, 'width:90px')}
         <span>–</span>
-        ${timeInputHTML('hrs-end', `data-date="${s.date}" data-st="${esc(s.stationId)}"`, endVal, 'width:90px')}
-        <button class="btn btn-secondary btn-sm hrs-save" data-date="${s.date}" data-st="${esc(s.stationId)}">${log ? 'Aktualizovať' : 'Zapísať hodiny'}</button>
+        ${timeInputHTML('hrs-end', `data-date="${s.date}" data-st="${esc(s.stationId)}"`, s.closesAt, 'width:90px')}
+        <button class="btn btn-secondary btn-sm hrs-save" data-date="${s.date}" data-st="${esc(s.stationId)}">Zapísať hodiny</button>
       </div>`;
     }
 
@@ -242,32 +260,37 @@
       }</div>`;
     }
 
-    // Substitution — worker reports hours for someone else's shift
+    // Substitution — worker reports hours for someone else's shift (today only)
     let subHtml = '';
     if (published && d.fullSchedule) {
-      const dateOpts = Object.keys(d.fullSchedule).sort().map(dt => `<option value="${esc(dt)}">${fmtShort(dt)}</option>`).join('');
+      const today = localTodayISO();
+      const canSubToday = Boolean(d.fullSchedule[today]);
       const mySubLogs = (d.myHourLogs || []).filter(h => h.substituteFor);
       const subLogRows = mySubLogs.map(h => {
         const badge = h.status === 'approved'
-          ? `<span class="badge badge-success">✓ Schválené ${esc(h.approvedStart)}–${esc(h.approvedEnd)}</span>`
+          ? '<span class="badge badge-success">✓ Schválené</span>'
           : '<span class="badge badge-warning">⏳ Čaká na schválenie</span>';
-        return `<div style="margin-bottom:6px">${fmtShort(h.date)} — zastúpil(a) si <strong>${esc(h.substituteForName||'?')}</strong> (nahlásené ${esc(h.reportedStart)}–${esc(h.reportedEnd)}) ${badge}</div>`;
+        return `<div style="margin-bottom:6px">${fmtShort(h.date)} — zastúpil(a) si <strong>${esc(h.substituteForName||'?')}</strong> (nahlásil(a) si ${esc(h.reportedStart)}–${esc(h.reportedEnd)}) ${badge}</div>`;
       }).join('');
 
-      subHtml = `<div class="card">
-        <div class="section-title">Zastúpil(a) si niekoho?</div>
-        <p class="text-muted" style="margin-bottom:10px">Ak si pracoval(a) namiesto iného brigádnika na jeho zmene, zapíš to tu.</p>
+      const subForm = canSubToday ? `
         <div class="form-row">
-          <div class="form-group"><label>Deň</label><select id="sub-date">${dateOpts}</select></div>
           <div class="form-group"><label>Stanovisko</label><select id="sub-station"></select></div>
           <div class="form-group"><label>Za koho</label><select id="sub-for"></select></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label>Od</label>${timeInputHTML('sub-start', '', '10:00')}</div>
-          <div class="form-group"><label>Do</label>${timeInputHTML('sub-end', '', '19:00')}</div>
+          <div class="form-group"><label>Od</label>${timeInputHTML('sub-start', '', d.defaultOpensAt || '10:00')}</div>
+          <div class="form-group"><label>Do</label>${timeInputHTML('sub-end', '', d.defaultClosesAt || '19:00')}</div>
         </div>
+        <input type="hidden" id="sub-date" value="${esc(today)}">
         <button class="btn btn-primary btn-sm" id="sub-save">Zapísať zástup</button>
-        <div id="sub-hrs-msg" style="margin-top:8px"></div>
+        <div id="sub-hrs-msg" style="margin-top:8px"></div>`
+        : '<p class="text-muted">Dnes nie je otvorený deň — zástup zapíšeš v deň, keď zaňho pracuješ.</p>';
+
+      subHtml = `<div class="card">
+        <div class="section-title">Zastúpil(a) si niekoho dnes?</div>
+        <p class="text-muted" style="margin-bottom:10px">Ak si dnes pracoval(a) namiesto iného brigádnika na jeho zmene, zapíš to tu.</p>
+        ${subForm}
         ${subLogRows ? `<div style="margin-top:14px">${subLogRows}</div>` : ''}
       </div>`;
     }
@@ -383,32 +406,60 @@
       });
     });
 
-    // Substitution cascading dropdowns
-    function refreshSubStationOptions() {
-      const dateSel = document.getElementById('sub-date');
-      const stSel = document.getElementById('sub-station');
-      if (!dateSel || !stSel) return;
-      const date = dateSel.value;
-      const stations = d.fullSchedule?.[date] || {};
-      stSel.innerHTML = Object.entries(stations).map(([sid, info]) =>
-        `<option value="${esc(sid)}">${esc(info.stationName)}</option>`).join('');
-      refreshSubForOptions();
-    }
+    // Correction — re-open an already-reported entry for a new approval
+    document.querySelectorAll('.hrs-corr').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const { date, st } = btn.dataset;
+        const wrap = document.querySelector(`[data-corr-wrap="${date}|${st}"]`);
+        if (!wrap) return;
+        wrap.innerHTML = `
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span class="text-muted" style="font-size:.8rem">Oprava:</span>
+            ${timeInputHTML('hrs-start', `data-date="${date}" data-st="${st}"`, '', 'width:90px')}
+            <span>–</span>
+            ${timeInputHTML('hrs-end', `data-date="${date}" data-st="${st}"`, '', 'width:90px')}
+            <button class="btn btn-primary btn-sm hrs-save" data-date="${date}" data-st="${st}">Odoslať opravu</button>
+          </div>
+          <p class="text-muted" style="font-size:.78rem;margin-top:4px">Opravu musí znova schváliť prevádzkar.</p>`;
+        wrap.querySelector('.hrs-save').addEventListener('click', async (e) => {
+          const b = e.currentTarget;
+          const start = wrap.querySelector('.hrs-start')?.value;
+          const end = wrap.querySelector('.hrs-end')?.value;
+          if (!start || !end) return;
+          b.disabled = true;
+          try {
+            S.data = await api('POST', `/api/worker/${S.token}/hours`, { date, stationId: st, start, end });
+            renderWorkerMain();
+          } catch (err) {
+            alert('Chyba: ' + err.message);
+            b.disabled = false;
+          }
+        });
+      });
+    });
+
+    // Substitution — station/worker dropdowns for today
     function refreshSubForOptions() {
-      const dateSel = document.getElementById('sub-date');
       const stSel = document.getElementById('sub-station');
       const forSel = document.getElementById('sub-for');
-      if (!dateSel || !stSel || !forSel) return;
-      const date = dateSel.value;
-      const info = d.fullSchedule?.[date]?.[stSel.value];
+      const dateEl = document.getElementById('sub-date');
+      if (!stSel || !forSel || !dateEl) return;
+      const info = d.fullSchedule?.[dateEl.value]?.[stSel.value];
       const workers = (info?.workers || []).filter(w => w.id !== d.workerId);
       forSel.innerHTML = workers.length
         ? workers.map(w => `<option value="${esc(w.id)}">${esc(w.name)}</option>`).join('')
         : '<option value="">— nikto priradený —</option>';
     }
-    document.getElementById('sub-date')?.addEventListener('change', refreshSubStationOptions);
+    (function initSubStations() {
+      const stSel = document.getElementById('sub-station');
+      const dateEl = document.getElementById('sub-date');
+      if (!stSel || !dateEl) return;
+      const stations = d.fullSchedule?.[dateEl.value] || {};
+      stSel.innerHTML = Object.entries(stations).map(([sid, info]) =>
+        `<option value="${esc(sid)}">${esc(info.stationName)}</option>`).join('');
+      refreshSubForOptions();
+    })();
     document.getElementById('sub-station')?.addEventListener('change', refreshSubForOptions);
-    if (document.getElementById('sub-date')) refreshSubStationOptions();
 
     document.getElementById('sub-save')?.addEventListener('click', async () => {
       const date = document.getElementById('sub-date')?.value;
@@ -509,19 +560,9 @@
       </div>`;
   }
 
-  function buildOperatorHours() {
-    const d = S.data;
-    const stationMap = new Map((d.stations || []).map(s => [s.id, s.name]));
-    const logs = [...(d.hourLogs || [])].sort((a, b) => {
-      if (a.status !== b.status) return a.status === 'pending' ? -1 : 1;
-      return a.date.localeCompare(b.date);
-    });
-
-    if (!logs.length) {
-      return `<div class="card"><p class="text-muted">Zatiaľ nikto nenahlásil odpracované hodiny.</p></div>`;
-    }
-
-    const rows = logs.map(h => {
+  function operatorHourRows(logs) {
+    const stationMap = new Map((S.data.stations || []).map(s => [s.id, s.name]));
+    return logs.map(h => {
       const whoLabel = h.substituteFor
         ? `${esc(h.workerName)} <span class="text-muted" style="font-size:.78rem">(zastúpil ${esc(h.substituteForName || '?')})</span>`
         : esc(h.workerName);
@@ -552,16 +593,68 @@
         <td></td>
       </tr>`;
     }).join('');
+  }
+
+  const OP_HOURS_TABLE_HEAD = '<thead><tr><th>Dátum</th><th>Stanovisko</th><th>Brigádnik</th><th>Tvoje schválenie</th><th>Schválil</th></tr></thead>';
+  const OP_HOURS_NOTE = 'Časy zadávaš nezávisle podľa vlastnej vedomosti o odpracovaných hodinách — systém ti nezobrazuje, čo nahlásil brigádnik.';
+
+  function buildOperatorToday() {
+    const d = S.data;
+    const today = localTodayISO();
+    const stations = d.stations || [];
+    const sched = d.schedule?.[today];
+
+    const schedCard = !sched
+      ? `<div class="card"><div class="section-title">${fmtFull(today)}</div><p class="text-muted">Dnes nie je otvorený deň.</p></div>`
+      : `<div class="card">
+          <div class="section-title">Dnes na stanoviskách &mdash; ${fmtFull(today)}</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
+            ${stations.map(st => {
+              const cell = sched[st.id];
+              if (!cell || cell.hidden) return '';
+              const names = cell.workers || [];
+              return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px">
+                <div style="font-weight:700;color:var(--orange-dark);margin-bottom:2px">${esc(cell.stationName || st.name)}</div>
+                <div class="text-muted" style="font-size:.78rem;margin-bottom:6px">${esc(cell.opensAt||'')}–${esc(cell.closesAt||'')}</div>
+                ${names.map(n => `<span class="worker-chip">${esc(n)}</span>`).join('') || '<span class="text-muted">—</span>'}
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+
+    const todayLogs = (d.hourLogs || [])
+      .filter(h => h.date === today)
+      .sort((a, b) => (a.status === b.status ? 0 : a.status === 'pending' ? -1 : 1));
+
+    const hoursCard = `<div class="card">
+      <div class="section-title">Hodiny na schválenie &mdash; dnes</div>
+      <p class="text-muted" style="margin-bottom:12px;font-size:.84rem">${OP_HOURS_NOTE}</p>
+      <div id="op-hrs-msg"></div>
+      ${todayLogs.length
+        ? `<div style="overflow-x:auto"><table>${OP_HOURS_TABLE_HEAD}<tbody>${operatorHourRows(todayLogs)}</tbody></table></div>`
+        : '<p class="text-muted">Dnes zatiaľ nikto nenahlásil hodiny.</p>'}
+    </div>`;
+
+    return schedCard + hoursCard;
+  }
+
+  function buildOperatorHours() {
+    const d = S.data;
+    const logs = [...(d.hourLogs || [])].sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'pending' ? -1 : 1;
+      return a.date.localeCompare(b.date);
+    });
+
+    if (!logs.length) {
+      return `<div class="card"><p class="text-muted">Zatiaľ nikto nenahlásil odpracované hodiny.</p></div>`;
+    }
 
     return `
       <div class="card">
-        <p class="text-muted" style="margin-bottom:12px;font-size:.84rem">Časy zadávaš nezávisle podľa vlastnej vedomosti o odpracovaných hodinách — systém ti nezobrazuje, čo nahlásil brigádnik.</p>
+        <p class="text-muted" style="margin-bottom:12px;font-size:.84rem">${OP_HOURS_NOTE}</p>
         <div id="op-hrs-msg"></div>
         <div style="overflow-x:auto">
-          <table>
-            <thead><tr><th>Dátum</th><th>Stanovisko</th><th>Brigádnik</th><th>Tvoje schválenie</th><th>Schválil</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
+          <table>${OP_HOURS_TABLE_HEAD}<tbody>${operatorHourRows(logs)}</tbody></table>
         </div>
       </div>`;
   }
@@ -602,17 +695,23 @@
       return;
     }
 
+    const pendingCount = (d.hourLogs || []).filter(h => h.status === 'pending').length;
     const tabs = [
+      { id: 'dnes', label: 'Aktuálny deň' },
       { id: 'rozpis', label: 'Rozpis' },
-      { id: 'hodiny', label: 'Hodiny' },
+      { id: 'hodiny', label: pendingCount ? `Hodiny (${pendingCount})` : 'Hodiny' },
     ];
+
+    const content = S.opTab === 'hodiny' ? buildOperatorHours()
+      : S.opTab === 'rozpis' ? buildOperatorSchedule()
+      : buildOperatorToday();
 
     app.innerHTML = header + `
       <div class="container">
         <div class="tabs" id="op-tabs">
           ${tabs.map(t => `<button class="tab-btn${S.opTab===t.id?' active':''}" data-tab="${t.id}">${t.label}</button>`).join('')}
         </div>
-        <div id="op-tab-content">${S.opTab === 'hodiny' ? buildOperatorHours() : buildOperatorSchedule()}</div>
+        <div id="op-tab-content">${content}</div>
       </div>`;
 
     document.getElementById('op-tabs').addEventListener('click', e => {
@@ -622,7 +721,7 @@
       renderOperatorMain();
     });
 
-    if (S.opTab === 'hodiny') attachOperatorHours();
+    if (S.opTab === 'hodiny' || S.opTab === 'dnes') attachOperatorHours();
   }
 
   // ─── ADMIN VIEW ───────────────────────────────────────────────────────────
@@ -703,6 +802,7 @@
       { id: 'submissions', label: 'Odpovede' },
       { id: 'schedule',    label: 'Rozpis' },
       { id: 'skupiny',     label: 'Skupiny' },
+      { id: 'hodiny',      label: 'Hodiny' },
       { id: 'requests',    label: pc ? `Žiadosti (${pc})` : 'Žiadosti' },
       { id: 'exports',     label: 'Exporty' },
       { id: 'agent',       label: '🤖 Agent' },
@@ -744,6 +844,7 @@
       case 'submissions': el.innerHTML = buildSubmissions(); attachSubmissions(); break;
       case 'schedule':    el.innerHTML = buildSchedule();    attachSchedule();    break;
       case 'skupiny':     el.innerHTML = buildSkupiny();     attachSkupiny();     break;
+      case 'hodiny':      el.innerHTML = buildAdminHours();                       break;
       case 'requests':    el.innerHTML = buildRequests();    attachRequests();    break;
       case 'exports':     el.innerHTML = buildExports();                          break;
       case 'agent':       el.innerHTML = buildAgent();       attachAgent();       break;
@@ -1603,6 +1704,98 @@
         btn.disabled = false; btn.textContent = 'Uložiť skupiny';
       }
     });
+  }
+
+  // ─── ADMIN HOURS TAB ──────────────────────────────────────────────────────
+  function hoursFromRange(start, end) {
+    const toMin = t => { const [h, m] = (t || '0:00').split(':').map(Number); return (h||0)*60 + (m||0); };
+    const mins = toMin(end) - toMin(start);
+    return mins > 0 ? mins / 60 : 0;
+  }
+
+  function buildAdminHours() {
+    const d = S.data;
+    const logs = d.hourLogs || [];
+    const stationMap = new Map((d.stations || []).map(s => [s.id, s.name]));
+
+    if (!logs.length) {
+      return `<div class="card"><p class="text-muted">Zatiaľ neboli nahlásené žiadne odpracované hodiny.</p></div>`;
+    }
+
+    // Per-worker approved totals
+    const totals = new Map();
+    for (const h of logs) {
+      if (h.status !== 'approved') continue;
+      const hrs = hoursFromRange(h.approvedStart, h.approvedEnd);
+      const cur = totals.get(h.workerName) || { shifts: 0, hours: 0 };
+      cur.shifts += 1; cur.hours += hrs;
+      totals.set(h.workerName, cur);
+    }
+    const totalRows = [...totals.entries()]
+      .sort((a, b) => b[1].hours - a[1].hours)
+      .map(([name, v]) => `<tr><td>${esc(name)}</td><td>${v.shifts}</td><td><strong>${v.hours.toFixed(1)} h</strong></td></tr>`)
+      .join('');
+
+    const discrepancies = logs.filter(h =>
+      h.status === 'approved' && (h.reportedStart !== h.approvedStart || h.reportedEnd !== h.approvedEnd)
+    );
+    const pending = logs.filter(h => h.status === 'pending');
+
+    const detailRows = [...logs]
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .map(h => {
+        const stn = esc(stationMap.get(h.stationId) || h.stationId);
+        const who = h.substituteFor
+          ? `${esc(h.workerName)} <span class="text-muted" style="font-size:.76rem">(za ${esc(h.substituteForName||'?')})</span>`
+          : esc(h.workerName);
+        if (h.status !== 'approved') {
+          return `<tr>
+            <td>${fmtShort(h.date)}</td><td>${stn}</td><td>${who}</td>
+            <td>${esc(h.reportedStart)}–${esc(h.reportedEnd)}</td>
+            <td><span class="badge badge-warning">⏳ Čaká</span></td>
+            <td>—</td><td>—</td>
+          </tr>`;
+        }
+        const mismatch = (h.reportedStart !== h.approvedStart || h.reportedEnd !== h.approvedEnd);
+        const diffH = hoursFromRange(h.approvedStart, h.approvedEnd) - hoursFromRange(h.reportedStart, h.reportedEnd);
+        return `<tr${mismatch ? ' style="background:#fdf3f2"' : ''}>
+          <td>${fmtShort(h.date)}</td><td>${stn}</td><td>${who}</td>
+          <td>${esc(h.reportedStart)}–${esc(h.reportedEnd)}</td>
+          <td>${esc(h.approvedStart)}–${esc(h.approvedEnd)}</td>
+          <td>${mismatch
+            ? `<span class="badge badge-danger">⚠ Nezhoda ${diffH > 0 ? '+' : ''}${diffH.toFixed(1)} h</span>`
+            : '<span class="badge badge-success">✓ Zhoda</span>'}</td>
+          <td class="text-muted" style="font-size:.8rem">${esc(h.approvedByName || '')}</td>
+        </tr>`;
+      }).join('');
+
+    return `
+      <div class="card">
+        <div class="section-title">Súhrn schválených hodín &mdash; ${esc(d.month)}</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+          ${pending.length ? `<span class="badge badge-warning">⏳ ${pending.length} čaká na schválenie</span>` : ''}
+          ${discrepancies.length ? `<span class="badge badge-danger">⚠ ${discrepancies.length} nezhôd</span>` : '<span class="badge badge-success">✓ Žiadne nezhody</span>'}
+        </div>
+        ${totalRows
+          ? `<div style="overflow-x:auto"><table style="width:auto">
+              <thead><tr><th>Brigádnik</th><th>Zmeny</th><th>Schválené hodiny</th></tr></thead>
+              <tbody>${totalRows}</tbody></table></div>`
+          : '<p class="text-muted">Zatiaľ nič schválené.</p>'}
+        <div class="actions">
+          <a href="/api/export/actual-hours.xlsx" class="btn btn-primary">⬇ Exportovať mesačný výkaz (Excel)</a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Detail všetkých záznamov</div>
+        <p class="text-muted" style="margin-bottom:10px;font-size:.84rem">Nezhoda znamená, že prevádzkar schválil iný čas, než brigádnik nahlásil. Prevádzkar nahlásený čas nevidí — schvaľuje nezávisle.</p>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Dátum</th><th>Stanovisko</th><th>Brigádnik</th><th>Nahlásil</th><th>Schválené</th><th>Kontrola</th><th>Schválil</th></tr></thead>
+            <tbody>${detailRows}</tbody>
+          </table>
+        </div>
+      </div>`;
   }
 
   // ─── AGENT TAB ────────────────────────────────────────────────────────────
