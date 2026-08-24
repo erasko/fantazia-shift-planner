@@ -535,7 +535,7 @@
     const openDays = (d.openDays || []).slice().sort();
     const sched = d.schedule || {};
 
-    const thead = `<tr><th>Dátum</th>${stations.map(s => `<th>${esc(s.name)}</th>`).join('')}</tr>`;
+    const thead = `<tr><th>Dátum</th>${stations.map(s => `<th>${esc(s.name)}</th>`).join('')}<th>Voľní</th></tr>`;
     const tbody = openDays.map(date => {
       const cells = stations.map(st => {
         const cell = sched[date]?.[st.id] || {};
@@ -551,7 +551,13 @@
           ${names.map(n => `<span class="worker-chip">${esc(n)}</span>`).join('') || '<span class="text-muted">—</span>'}
         </td>`;
       }).join('');
-      return `<tr><td><strong>${fmtShort(date)}</strong></td>${cells}</tr>`;
+      const free = d.freeWorkers?.[date] || [];
+      const freeCell = `<td class="sched-cell">${
+        free.length
+          ? free.map(w => `<span class="free-chip" title="${esc(w.stations.join(' · '))} · ${w.shifts} zmien">${esc(w.name)}</span>`).join('')
+          : '<span class="text-muted">—</span>'
+      }</td>`;
+      return `<tr><td><strong>${fmtShort(date)}</strong></td>${cells}${freeCell}</tr>`;
     }).join('');
 
     return `
@@ -637,7 +643,23 @@
         : '<p class="text-muted">Dnes zatiaľ nikto nenahlásil hodiny.</p>'}
     </div>`;
 
-    return schedCard + hoursCard;
+    const freeToday = d.freeWorkers?.[today];
+    const freeCard = !sched ? '' : `<div class="card">
+      <div class="section-title">Voľní dnes <span class="text-muted" style="font-size:.8rem;font-weight:400">(ak treba náhradu)</span></div>
+      ${freeToday && freeToday.length
+        ? `<p class="text-muted" style="margin-bottom:10px;font-size:.84rem">Zoradení od najmenej odpracovaných zmien. Nezobrazujú sa tí, čo nahlásili, že dnes nemôžu.</p>
+           <div style="display:flex;flex-direction:column;gap:8px">
+             ${freeToday.map(w => `
+               <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:8px">
+                 <strong style="color:var(--text)">${esc(w.name)}</strong>
+                 <span class="badge badge-info">${w.shifts} ${w.shifts === 1 ? 'zmena' : (w.shifts >= 2 && w.shifts <= 4 ? 'zmeny' : 'zmien')}</span>
+                 <span class="text-muted" style="font-size:.82rem">${w.stations.length ? esc(w.stations.join(' · ')) : 'žiadne stanovisko'}</span>
+               </div>`).join('')}
+           </div>`
+        : '<p class="text-muted">Dnes nie je nikto voľný — všetci sú buď v rozpise, alebo nahlásili, že nemôžu.</p>'}
+    </div>`;
+
+    return schedCard + freeCard + hoursCard;
   }
 
   function buildOperatorHours() {

@@ -527,6 +527,52 @@ function publicWorkerStore(store, worker) {
   };
 }
 
+// Who could cover a shift on each published day — for when someone drops out
+// last minute and the operator needs to find a replacement to call. Excludes
+// anyone already rostered that day or who reported being unavailable.
+function operatorFreeWorkers(store) {
+  const stationName = new Map(store.stations.map((s) => [s.id, s.name]));
+
+  // Rostered shift count across all published months, so the least-loaded
+  // person is offered first rather than the same few being called repeatedly.
+  const shiftCount = new Map();
+  for (const w of store.workers) shiftCount.set(w.id, 0);
+  for (const month of store.publishedMonths || []) {
+    const sched = effectiveSchedule(store, month);
+    for (const stations of Object.values(sched)) {
+      for (const wids of Object.values(stations)) {
+        for (const id of wids) shiftCount.set(id, (shiftCount.get(id) || 0) + 1);
+      }
+    }
+  }
+
+  const result = {};
+  for (const month of store.publishedMonths || []) {
+    const sched = effectiveSchedule(store, month);
+    const latestSub = latestSubmissionsFor(store, month);
+    for (const date of [...periodFor(store, month).openDays].sort()) {
+      const assigned = new Set();
+      for (const st of store.stations) {
+        for (const id of sched[date]?.[st.id] || []) assigned.add(id);
+      }
+      result[date] = store.workers
+        .filter((w) => {
+          if (assigned.has(w.id)) return false;
+          if (latestSub.get(w.id)?.unavailableDays?.includes(date)) return false;
+          return true;
+        })
+        .map((w) => ({
+          id: w.id,
+          name: w.name,
+          stations: (w.allowedStations || []).map((sid) => stationName.get(sid)).filter(Boolean),
+          shifts: shiftCount.get(w.id) || 0,
+        }))
+        .sort((a, b) => a.shifts - b.shifts || a.name.localeCompare(b.name, 'sk'));
+    }
+  }
+  return result;
+}
+
 // Every published month, so the operator keeps seeing the live roster even
 // once the admin has moved on to planning the next month.
 function operatorScheduleView(store) {
@@ -1215,6 +1261,7 @@ async function handleRequest(req, res) {
       stations: store.stations,
       openDays: [...publishedOpenDays(store)].sort(),
       schedule: operatorScheduleView(store),
+      freeWorkers: operatorFreeWorkers(store),
       hourLogs: sanitizeHourLogsForOperator(store),
     });
   }
