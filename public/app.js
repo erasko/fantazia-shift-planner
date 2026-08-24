@@ -198,11 +198,11 @@
     const locked = d.locked;
     const published = d.scheduleVisible;
 
-    const noticeHtml = published
-      ? `<div class="notice-published">✓ Rozpis bol zverejnený. Zmeny dostupnosti sú uzamknuté.</div>`
-      : locked
-        ? `<div class="notice-locked">⏰ Deadline na odovzdanie uplynul. Môžeš podať žiadosť o zmenu.</div>`
-        : '';
+    const noticeHtml = locked
+      ? (published
+          ? `<div class="notice-published">✓ Rozpis bol zverejnený. Zmeny dostupnosti sú uzamknuté.</div>`
+          : `<div class="notice-locked">⏰ Deadline na odovzdanie uplynul. Môžeš podať žiadosť o zmenu.</div>`)
+      : `<div class="notice-locked" style="background:#e8f4fd;border-color:#bfe0f5;color:#1a5276">📋 Vyplň dostupnosť na <strong>${esc(d.month)}</strong> — nižšie v kalendári.</div>`;
 
     const calHtml = buildCalendar(d.periodStart, d.periodEnd, d.openDays, [...S.selectedDays], 'worker');
 
@@ -245,7 +245,9 @@
     let schedHtml = '';
     if (published) {
       const shifts = d.confirmedSchedule || [];
-      schedHtml = `<div class="card"><div class="section-title">Tvoj rozpis</div>${
+      const schedMonths = [...new Set(shifts.map(s => s.month).filter(Boolean))];
+      const monthLabel = schedMonths.length ? ` — ${schedMonths.map(esc).join(', ')}` : '';
+      schedHtml = `<div class="card"><div class="section-title">Tvoj rozpis${monthLabel}</div>${
         shifts.length === 0
           ? '<p class="text-muted">V tomto období nemáš žiadne pridelené zmeny.</p>'
           : `<ul class="shifts-list">${shifts.map(s => `
@@ -323,7 +325,7 @@
       <div class="container">
         ${noticeHtml}
         <div class="card">
-          <div class="section-title">Moja dostupnosť${locked ? ' (uzamknutá)' : ''}</div>
+          <div class="section-title">Moja dostupnosť — ${esc(d.month)}${locked ? ' (uzamknutá)' : ''}</div>
           ${!locked ? `<p class="text-muted" style="margin-bottom:10px">Klikni na deň keď <strong>NEMÔŽEŠ</strong> pracovať (červená). Ostatné dni = dostupný.</p>` : ''}
           ${calHtml}
           ${d.submittedAt ? `<p class="text-muted" style="margin-top:8px">Naposledy odoslané: ${fmtDateTime(d.submittedAt)}</p>` : ''}
@@ -902,10 +904,25 @@
       </tr>`;
     }).join('');
 
+    const known = d.knownMonths || [];
+    const pubMonths = d.publishedMonths || [];
+    const otherPublished = pubMonths.filter(m => m !== d.month);
+    const monthChips = known.length > 1
+      ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+          <span class="text-muted" style="font-size:.82rem">Mesiace:</span>
+          ${known.map(m => `<button class="btn btn-sm month-jump${m === d.month ? ' btn-primary' : ' btn-secondary'}" data-month="${esc(m)}">${esc(m)}${pubMonths.includes(m) ? ' ✓' : ''}</button>`).join('')}
+        </div>`
+      : '';
+    const otherPubNote = otherPublished.length
+      ? `<div class="alert alert-success" style="margin-bottom:12px">✓ Zverejnené a viditeľné pre brigádnikov: <strong>${otherPublished.map(esc).join(', ')}</strong> — zostáva im viditeľné, aj keď tu pripravuješ iný mesiac.</div>`
+      : '';
+
     return `
       <div id="set-msg"></div>
       <div class="card">
         <div class="section-title">Plánovacie obdobie</div>
+        ${monthChips}
+        ${otherPubNote}
         <div class="form-row">
           <div class="form-group">
             <label>Mesiac (YYYY-MM)</label>
@@ -1031,6 +1048,22 @@
   }
 
   function attachSettings() {
+    // Switch the working month — each month keeps its own dates and open days
+    document.querySelectorAll('.month-jump').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const month = btn.dataset.month;
+        if (month === S.data.month) return;
+        btn.disabled = true;
+        try {
+          S.data = await api('PUT', '/api/config', { month });
+          syncLocal(); S.tab = 'settings'; renderPanel();
+        } catch (e) {
+          setMsg('set-msg', `<div class="alert alert-error">Chyba: ${esc(e.message)}</div>`);
+          btn.disabled = false;
+        }
+      });
+    });
+
     // Open-days calendar toggle
     document.querySelectorAll('.cal-day.open-toggle').forEach(cell => {
       cell.addEventListener('click', () => {

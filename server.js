@@ -62,7 +62,41 @@ function defaultStore() {
     schedulePublished: false,
     changeRequests: [],
     hourLogs: [],
+    // Per-month archive of period settings, so switching the admin's working
+    // month doesn't overwrite another month's dates/open days.
+    periods: {},
+    // Months whose schedule is visible to workers. Lets an already-published
+    // month stay live while availability is collected for the next one.
+    publishedMonths: [],
   };
+}
+
+// Older stores kept a single flat period plus one schedulePublished flag.
+// Fold that into the per-month structures so both shapes work.
+function migrateStore(store) {
+  if (!store.periods) store.periods = {};
+  if (!Array.isArray(store.publishedMonths)) store.publishedMonths = [];
+
+  if (store.month && !store.periods[store.month]) {
+    store.periods[store.month] = {
+      periodStart: store.periodStart,
+      periodEnd: store.periodEnd,
+      openDays: store.openDays || [],
+      availabilityDeadline: store.availabilityDeadline || '',
+    };
+  }
+  if (store.schedulePublished && store.month && !store.publishedMonths.includes(store.month)) {
+    store.publishedMonths.push(store.month);
+  }
+
+  for (const sub of store.submissions || []) {
+    if (!sub.month) {
+      sub.month = sub.unavailableDays?.[0]?.slice(0, 7)
+        || sub.submittedAt?.slice(0, 7)
+        || store.month;
+    }
+  }
+  return store;
 }
 
 let _store = null;
@@ -70,13 +104,13 @@ let _store = null;
 async function loadStore() {
   if (pool) {
     const res = await pool.query("SELECT data FROM app_store WHERE id = 'main'");
-    if (res.rows.length) return { ...defaultStore(), ...res.rows[0].data };
+    if (res.rows.length) return migrateStore({ ...defaultStore(), ...res.rows[0].data });
     return defaultStore();
   }
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(STORE_FILE)) return defaultStore();
   try {
-    return { ...defaultStore(), ...JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) };
+    return migrateStore({ ...defaultStore(), ...JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) });
   } catch {
     return defaultStore();
   }
@@ -171,6 +205,73 @@ function checkRateLimit(key, max = 5, windowMs = 15 * 60 * 1000) {
   return true;
 }
 
+// ─── Periods ──────────────────────────────────────────────────────────────────
+
+// The flat month/period/openDays fields describe the month the admin is
+// currently working on; `periods` keeps every other month's settings intact.
+function snapshotCurrentPeriod(store) {
+  if (!store.month) return;
+  if (!store.periods) store.periods = {};
+  store.periods[store.month] = {
+    periodStart: store.periodStart,
+    periodEnd: store.periodEnd,
+    openDays: store.openDays || [],
+    availabilityDeadline: store.availabilityDeadline || '',
+  };
+}
+
+function activateMonth(store, month) {
+  snapshotCurrentPeriod(store);
+  const p = store.periods?.[month];
+  store.month = month;
+  if (p) {
+    store.periodStart = p.periodStart;
+    store.periodEnd = p.periodEnd;
+    store.openDays = p.openDays || [];
+    store.availabilityDeadline = p.availabilityDeadline || '';
+  } else {
+    const last = lastDayOfMonth(month);
+    store.periodStart = `${month}-01`;
+    store.periodEnd = `${month}-${String(last).padStart(2, '0')}`;
+    store.openDays = [];
+    store.availabilityDeadline = '';
+  }
+  store.schedulePublished = isMonthPublished(store, month);
+}
+
+function isMonthPublished(store, month) {
+  return (store.publishedMonths || []).includes(month);
+}
+
+function setMonthPublished(store, month, published) {
+  if (!Array.isArray(store.publishedMonths)) store.publishedMonths = [];
+  const has = store.publishedMonths.includes(month);
+  if (published && !has) store.publishedMonths.push(month);
+  if (!published && has) store.publishedMonths = store.publishedMonths.filter((m) => m !== month);
+  if (month === store.month) store.schedulePublished = published;
+}
+
+function periodFor(store, month) {
+  if (month === store.month) {
+    return {
+      periodStart: store.periodStart,
+      periodEnd: store.periodEnd,
+      openDays: store.openDays || [],
+      availabilityDeadline: store.availabilityDeadline || '',
+    };
+  }
+  return store.periods?.[month] || { periodStart: '', periodEnd: '', openDays: [], availabilityDeadline: '' };
+}
+
+// Open days across every published month — what a worker may log hours against.
+function publishedOpenDays(store) {
+  const days = new Set();
+  for (const m of store.publishedMonths || []) {
+    for (const d of periodFor(store, m).openDays) days.add(d);
+  }
+  return days;
+}
+
 // ─── Schedule Generation ──────────────────────────────────────────────────────
 
 function isAvailabilityLocked(store) {
@@ -255,10 +356,10 @@ function sanitizeHourLogsForWorker(store, workerId) {
 
 // Lean per-date/station schedule table (id + name) used by workers to pick
 // who they're substituting for, and by operators to label hour-log entries.
-function publicScheduleTable(store) {
-  const sched = effectiveSchedule(store);
+function publicScheduleTable(store, month = store.month) {
+  const sched = effectiveSchedule(store, month);
   const table = {};
-  for (const date of [...store.openDays].sort()) {
+  for (const date of [...periodFor(store, month).openDays].sort()) {
     const dayOv = store.daySettings?.[date]?.stationOverrides || {};
     table[date] = {};
     for (const station of store.stations) {
@@ -275,12 +376,21 @@ function publicScheduleTable(store) {
   return table;
 }
 
-function generateSchedule(store) {
-  const latestSub = new Map();
-  for (const sub of store.submissions) {
-    const ex = latestSub.get(sub.workerId);
-    if (!ex || sub.submittedAt > ex.submittedAt) latestSub.set(sub.workerId, sub);
+// Latest submission per worker, scoped to one month — a worker filling in
+// October must not overwrite the September availability a published schedule
+// was built from.
+function latestSubmissionsFor(store, month) {
+  const latest = new Map();
+  for (const sub of store.submissions || []) {
+    if (month && (sub.month || '') !== month) continue;
+    const ex = latest.get(sub.workerId);
+    if (!ex || sub.submittedAt > ex.submittedAt) latest.set(sub.workerId, sub);
   }
+  return latest;
+}
+
+function generateSchedule(store) {
+  const latestSub = latestSubmissionsFor(store, store.month);
 
   const unavailable = new Map();
   for (const [wid, sub] of latestSub) {
@@ -337,8 +447,7 @@ function generateSchedule(store) {
 
 // ─── Data Views ───────────────────────────────────────────────────────────────
 
-function effectiveSchedule(store) {
-  const month = store.month;
+function effectiveSchedule(store, month = store.month) {
   const gen = store.schedule?.[month] || {};
   const manual = store.manualAssignments?.[month] || {};
   const merged = {};
@@ -352,20 +461,26 @@ function effectiveSchedule(store) {
   return merged;
 }
 
+// Shifts across every published month, so a worker keeps seeing September's
+// roster while the admin collects availability for October.
 function workerScheduleData(store, worker) {
-  if (!store.schedulePublished) return null;
-  const sched = effectiveSchedule(store);
+  const months = store.publishedMonths || [];
+  if (!months.length) return null;
   const shifts = [];
-  for (const [date, stations] of Object.entries(sched)) {
-    const dayOv = store.daySettings?.[date]?.stationOverrides || {};
-    for (const [stationId, workerIds] of Object.entries(stations)) {
-      if (workerIds.includes(worker.id)) {
+  for (const month of months) {
+    const sched = effectiveSchedule(store, month);
+    for (const [date, stations] of Object.entries(sched)) {
+      const dayOv = store.daySettings?.[date]?.stationOverrides || {};
+      for (const [stationId, workerIds] of Object.entries(stations)) {
+        if (!workerIds.includes(worker.id)) continue;
         const station = store.stations.find((s) => s.id === stationId);
         const ov = dayOv[stationId];
+        const needed = ov !== undefined ? (ov.required ?? station?.required ?? 1) : (station?.required || 1);
+        if (needed === 0) continue;
         const ds = store.daySettings?.[date] || {};
         const opensAt = station?.opensAt || ds.opensAt || store.defaultOpensAt || '10:00';
         const closesAt = station?.closesAt || ds.closesAt || store.defaultClosesAt || '19:00';
-        shifts.push({ date, stationId, stationName: ov?.mergedLabel || station?.name || stationId, opensAt, closesAt });
+        shifts.push({ date, month, stationId, stationName: ov?.mergedLabel || station?.name || stationId, opensAt, closesAt });
       }
     }
   }
@@ -373,13 +488,20 @@ function workerScheduleData(store, worker) {
 }
 
 function publicWorkerStore(store, worker) {
-  const latestSub = store.submissions
-    .filter((s) => s.workerId === worker.id)
+  // Availability always refers to the month the admin is currently collecting.
+  const latestSub = (store.submissions || [])
+    .filter((s) => s.workerId === worker.id && (s.month || '') === store.month)
     .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))[0];
 
   const pendingRequests = (store.changeRequests || []).filter(
     (r) => r.workerId === worker.id && r.status === 'pending'
   ).length;
+
+  const collectingPublished = isMonthPublished(store, store.month);
+  const publishedTables = {};
+  for (const m of store.publishedMonths || []) {
+    Object.assign(publishedTables, publicScheduleTable(store, m));
+  }
 
   return {
     workerName: worker.name,
@@ -394,35 +516,39 @@ function publicWorkerStore(store, worker) {
     defaultClosesAt: store.defaultClosesAt,
     stations: store.stations.map((s) => ({ id: s.id, name: s.name, opensAt: s.opensAt, closesAt: s.closesAt })),
     availabilityDeadline: store.availabilityDeadline,
-    locked: isAvailabilityLocked(store) || store.schedulePublished,
-    scheduleVisible: Boolean(store.schedulePublished),
+    locked: isAvailabilityLocked(store) || collectingPublished,
+    scheduleVisible: (store.publishedMonths || []).length > 0,
     unavailableDays: latestSub?.unavailableDays || [],
     submittedAt: latestSub?.submittedAt || null,
     confirmedSchedule: workerScheduleData(store, worker),
     pendingRequests,
-    fullSchedule: store.schedulePublished ? publicScheduleTable(store) : null,
+    fullSchedule: Object.keys(publishedTables).length ? publishedTables : null,
     myHourLogs: sanitizeHourLogsForWorker(store, worker.id),
   };
 }
 
+// Every published month, so the operator keeps seeing the live roster even
+// once the admin has moved on to planning the next month.
 function operatorScheduleView(store) {
-  const sched = effectiveSchedule(store);
   const workerMap = new Map(store.workers.map((w) => [w.id, w.name]));
   const result = {};
-  for (const date of [...store.openDays].sort()) {
-    result[date] = {};
-    const dayOv = store.daySettings?.[date]?.stationOverrides || {};
-    for (const station of store.stations) {
-      const ov = dayOv[station.id];
-      const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
-      const wids = sched[date]?.[station.id] || [];
-      result[date][station.id] = {
-        stationName: ov?.mergedLabel || station.name,
-        hidden: needed === 0,
-        opensAt: station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt,
-        closesAt: station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt,
-        workers: wids.map((id) => workerMap.get(id) || id),
-      };
+  for (const month of store.publishedMonths || []) {
+    const sched = effectiveSchedule(store, month);
+    for (const date of [...periodFor(store, month).openDays].sort()) {
+      result[date] = {};
+      const dayOv = store.daySettings?.[date]?.stationOverrides || {};
+      for (const station of store.stations) {
+        const ov = dayOv[station.id];
+        const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
+        const wids = sched[date]?.[station.id] || [];
+        result[date][station.id] = {
+          stationName: ov?.mergedLabel || station.name,
+          hidden: needed === 0,
+          opensAt: station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt,
+          closesAt: station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt,
+          workers: wids.map((id) => workerMap.get(id) || id),
+        };
+      }
     }
   }
   return result;
@@ -431,12 +557,7 @@ function operatorScheduleView(store) {
 function adminView(store) {
   const workerMap = new Map(store.workers.map((w) => [w.id, w.name]));
   const sched = effectiveSchedule(store);
-
-  const latestSub = new Map();
-  for (const sub of store.submissions) {
-    const ex = latestSub.get(sub.workerId);
-    if (!ex || sub.submittedAt > ex.submittedAt) latestSub.set(sub.workerId, sub);
-  }
+  const latestSub = latestSubmissionsFor(store, store.month);
 
   const scheduleWithNames = {};
   for (const date of store.openDays) {
@@ -493,6 +614,15 @@ function adminView(store) {
     scheduleWithNames,
     workerHours: Object.fromEntries([...computeWorkerHours(store)].map(([wid, v]) => [wid, v])),
     changeRequests: store.changeRequests || [],
+    // Only months worth offering as a switch target: the current one, any
+    // published one, and any that actually has days set up.
+    knownMonths: [...new Set([
+      store.month,
+      ...(store.publishedMonths || []),
+      ...Object.entries(store.periods || {})
+        .filter(([, p]) => (p.openDays || []).length > 0)
+        .map(([m]) => m),
+    ])].filter(Boolean).sort(),
   };
 }
 
@@ -974,7 +1104,7 @@ async function handleRequest(req, res) {
     const store = await getStore();
     const worker = store.workers.find((w) => w.token === workerSubM[1]);
     if (!worker) return respond(res, 404, { error: 'Odkaz neexistuje' });
-    if (store.schedulePublished || isAvailabilityLocked(store)) {
+    if (isMonthPublished(store, store.month) || isAvailabilityLocked(store)) {
       return respond(res, 403, { error: 'Odovzdávanie dostupnosti je uzamknuté' });
     }
     const body = await parseBody(req);
@@ -983,6 +1113,7 @@ async function handleRequest(req, res) {
         id: generateToken(),
         workerId: worker.id,
         workerName: worker.name,
+        month: s.month,
         unavailableDays: Array.isArray(body.unavailableDays) ? body.unavailableDays : [],
         submittedAt: new Date().toISOString(),
       });
@@ -1018,7 +1149,7 @@ async function handleRequest(req, res) {
     const store = await getStore();
     const worker = store.workers.find((w) => w.token === workerHoursM[1]);
     if (!worker) return respond(res, 404, { error: 'Odkaz neexistuje' });
-    if (!store.schedulePublished) return respond(res, 400, { error: 'Rozpis ešte nie je zverejnený' });
+    if (!(store.publishedMonths || []).length) return respond(res, 400, { error: 'Rozpis ešte nie je zverejnený' });
     const body = await parseBody(req);
     const date = body.date;
     const stationId = body.stationId;
@@ -1026,7 +1157,7 @@ async function handleRequest(req, res) {
     const start = body.start;
     const end = body.end;
     if (!date || !stationId || !start || !end) return respond(res, 400, { error: 'Chýbajú údaje' });
-    if (!store.openDays.includes(date)) return respond(res, 400, { error: 'Neplatný dátum' });
+    if (!publishedOpenDays(store).has(date)) return respond(res, 400, { error: 'Neplatný dátum' });
 
     const existing = (store.hourLogs || []).find(
       (h) => h.date === date && h.stationId === stationId && h.workerId === worker.id
@@ -1079,10 +1210,10 @@ async function handleRequest(req, res) {
       operatorId: op.id,
       operatorName: op.name,
       hasPassword: !!op.passwordHash,
-      schedulePublished: store.schedulePublished,
-      month: store.month,
+      schedulePublished: (store.publishedMonths || []).length > 0,
+      month: (store.publishedMonths || []).join(', ') || store.month,
       stations: store.stations,
-      openDays: [...store.openDays].sort(),
+      openDays: [...publishedOpenDays(store)].sort(),
       schedule: operatorScheduleView(store),
       hourLogs: sanitizeHourLogsForOperator(store),
     });
@@ -1142,9 +1273,12 @@ async function handleRequest(req, res) {
     if (!requireAdmin(req, res)) return;
     const body = await parseBody(req);
     await mutateStore((s) => {
-      const monthChanging = body.month && body.month !== s.month;
+      // Switching months archives the current one and restores the target's
+      // own dates — it no longer wipes the period or unpublishes anything.
+      if (body.month !== undefined && body.month !== s.month) {
+        activateMonth(s, body.month);
+      }
 
-      if (body.month !== undefined) s.month = body.month;
       if (body.periodStart !== undefined) s.periodStart = body.periodStart;
       if (body.periodEnd !== undefined) s.periodEnd = body.periodEnd;
       if (body.availabilityDeadline !== undefined) s.availabilityDeadline = body.availabilityDeadline;
@@ -1152,8 +1286,7 @@ async function handleRequest(req, res) {
       if (body.defaultClosesAt !== undefined) s.defaultClosesAt = body.defaultClosesAt;
       if (Array.isArray(body.openDays)) s.openDays = body.openDays;
       if (body.daySettings !== undefined) s.daySettings = body.daySettings;
-
-      if (monthChanging) s.schedulePublished = false;
+      snapshotCurrentPeriod(s);
 
       if (Array.isArray(body.stations)) {
         const existById = new Map(s.stations.map((st) => [st.id, st]));
@@ -1215,7 +1348,7 @@ async function handleRequest(req, res) {
     await mutateStore((s) => {
       if (!s.schedule) s.schedule = {};
       s.schedule[s.month] = generateSchedule(s);
-      s.schedulePublished = false;
+      setMonthPublished(s, s.month, false);
       if (body.discardManual) {
         if (!s.manualAssignments) s.manualAssignments = {};
         s.manualAssignments[s.month] = {};
@@ -1237,16 +1370,19 @@ async function handleRequest(req, res) {
           s.manualAssignments[s.month][date][stationId] = workerIds;
         }
       }
-      s.schedulePublished = false;
+      setMonthPublished(s, s.month, false);
     });
     return respond(res, 200, adminView(await getStore()));
   }
 
-  // Admin — publish / unpublish
+  // Admin — publish / unpublish the month currently being edited
   if (req.method === 'PUT' && p === '/api/schedule-publication') {
     if (!requireAdmin(req, res)) return;
     const body = await parseBody(req);
-    await mutateStore((s) => { s.schedulePublished = Boolean(body.published); });
+    await mutateStore((s) => {
+      snapshotCurrentPeriod(s);
+      setMonthPublished(s, s.month, Boolean(body.published));
+    });
     return respond(res, 200, { ok: true, schedulePublished: Boolean(body.published) });
   }
 
