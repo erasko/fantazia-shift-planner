@@ -18,6 +18,7 @@
     schedEdits: {},
     agentHistory: [],
     opTab: 'dnes',
+    msgType: 'availability',
   };
 
   // ─── Utils ────────────────────────────────────────────────────────────────
@@ -1854,6 +1855,159 @@
   }
 
   // ─── AGENT TAB ────────────────────────────────────────────────────────────
+
+  // Ready-to-send WhatsApp texts, built locally from the loaded admin data —
+  // no API key and no cost, since there's nothing here an LLM does better
+  // than a template with the right facts filled in.
+  const MSG_TYPES = {
+    availability: 'Výzva na vyplnenie dostupnosti',
+    schedule:     'Rozpis je zverejnený',
+    hours:        'Pripomienka — zapíš si hodiny',
+  };
+
+  function workerLink(w) {
+    return `${location.origin}/worker/${w.token}`;
+  }
+
+  function deadlineText(d) {
+    if (!d.availabilityDeadline) return null;
+    const dt = new Date(d.availabilityDeadline);
+    if (isNaN(dt)) return null;
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(dt.getDate())}.${pad(dt.getMonth() + 1)}.${dt.getFullYear()}`;
+  }
+
+  function shiftsForWorker(d, wid) {
+    const out = [];
+    for (const [date, st] of Object.entries(d.scheduleWithNames || {})) {
+      for (const [sid, info] of Object.entries(st)) {
+        if (sid.startsWith('_') || info.hidden) continue;
+        if ((info.workerIds || []).includes(wid)) {
+          out.push({ date, station: info.stationName, from: info.opensAt, to: info.closesAt });
+        }
+      }
+    }
+    return out.sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  // Shifts already past whose hours were never logged — who needs a nudge.
+  // Today is excluded: the shift may still be running, and the worker can
+  // still log it themselves until midnight.
+  function missingHourShifts(d, wid) {
+    const today = localTodayISO();
+    const logged = new Set((d.hourLogs || [])
+      .filter(h => h.workerId === wid)
+      .map(h => `${h.date}|${h.stationId}`));
+    return shiftsForWorker(d, wid).filter(s => {
+      if (s.date >= today) return false;
+      const info = d.scheduleWithNames?.[s.date] || {};
+      const sid = Object.keys(info).find(k => !k.startsWith('_') && info[k].stationName === s.station);
+      return sid ? !logged.has(`${s.date}|${sid}`) : false;
+    });
+  }
+
+  function buildMessageFor(d, w, type) {
+    const link = workerLink(w);
+    if (type === 'availability') {
+      const dl = deadlineText(d);
+      return `Ahoj ${w.name}, otvor si prosím svoj odkaz a vyplň, kedy v ${d.month} NEMÔŽEŠ pracovať.`
+        + (dl ? `\nUzávierka je ${dl}.` : '')
+        + `\n\n${link}\n\nVďaka! Cyril`;
+    }
+    if (type === 'schedule') {
+      const sh = shiftsForWorker(d, w.id);
+      if (!sh.length) {
+        return `Ahoj ${w.name}, rozpis na ${d.month} je zverejnený — tento raz na teba nevyšla žiadna zmena.\n\n${link}\n\nCyril`;
+      }
+      const list = sh.map(s => `• ${fmtShort(s.date)} — ${s.station}, ${s.from}–${s.to}`).join('\n');
+      return `Ahoj ${w.name}, rozpis na ${d.month} je zverejnený. Máš ${sh.length} ${sh.length === 1 ? 'zmenu' : (sh.length <= 4 ? 'zmeny' : 'zmien')}:\n\n${list}\n\nCelý rozpis: ${link}\n\nCyril`;
+    }
+    const miss = missingHourShifts(d, w.id);
+    const list = miss.map(s => `• ${fmtShort(s.date)} — ${s.station}`).join('\n');
+    return `Ahoj ${w.name}, chýbajú mi od teba zapísané hodiny za:\n\n${list}\n\nHodiny sa dajú zapísať len v deň zmeny, takže mi ich prosím pošli správou alebo sa ozvi prevádzkarovi.\n\nCyril`;
+  }
+
+  function messageRecipients(d, type) {
+    const workers = (d.workers || []).filter(w => w.token);
+    if (type !== 'hours') return workers;
+    return workers.filter(w => missingHourShifts(d, w.id).length > 0);
+  }
+
+  function buildMessages() {
+    const d = S.data;
+    const type = S.msgType || 'availability';
+    const recips = messageRecipients(d, type);
+
+    const opts = Object.entries(MSG_TYPES)
+      .map(([k, label]) => `<option value="${k}"${k === type ? ' selected' : ''}>${label}</option>`).join('');
+
+    const cards = recips.map((w, i) => {
+      const text = buildMessageFor(d, w, type);
+      return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <strong style="flex:1">${esc(w.name)}</strong>
+          <button class="btn btn-secondary btn-sm msg-copy" data-i="${i}">Kopírovať</button>
+        </div>
+        <textarea class="msg-body" data-i="${i}" rows="${Math.min(12, text.split('\n').length + 1)}"
+          style="width:100%;font-size:.82rem;font-family:inherit;resize:vertical">${esc(text)}</textarea>
+      </div>`;
+    }).join('');
+
+    const empty = type === 'hours'
+      ? 'Nikomu nechýbajú zapísané hodiny — všetci to majú v poriadku.'
+      : 'Žiadni brigádnici s osobným odkazom.';
+
+    return `
+      <div class="card">
+        <div class="section-title">📨 Správy pre brigádnikov <span class="text-muted" style="font-size:.78rem;font-weight:400">(lokálne, bez AI)</span></div>
+        <p class="text-muted" style="margin-bottom:12px;font-size:.86rem">
+          Hotové texty aj s osobným odkazom každého brigádnika — skopíruj a pošli cez WhatsApp.
+        </p>
+        <div class="form-row" style="align-items:flex-end">
+          <div class="form-group" style="max-width:320px">
+            <label>Typ správy</label>
+            <select id="msg-type">${opts}</select>
+          </div>
+          <div class="form-group" style="flex:none">
+            <button class="btn btn-secondary" id="msg-copy-all">Kopírovať všetky</button>
+          </div>
+        </div>
+        <div id="msg-msg"></div>
+        ${recips.length
+          ? `<div style="display:flex;flex-direction:column;gap:10px;margin-top:6px">${cards}</div>`
+          : `<p class="text-muted">${empty}</p>`}
+      </div>`;
+  }
+
+  function attachMessages() {
+    document.getElementById('msg-type')?.addEventListener('change', e => {
+      S.msgType = e.target.value;
+      document.getElementById('tab-content').innerHTML = buildAgent();
+      attachAgent();
+    });
+
+    async function copyText(text, okMsg) {
+      try {
+        await navigator.clipboard.writeText(text);
+        setMsg('msg-msg', `<div class="alert alert-success">✓ ${okMsg}</div>`);
+      } catch {
+        setMsg('msg-msg', '<div class="alert alert-error">Kopírovanie zlyhalo — označ text a skopíruj ručne.</div>');
+      }
+    }
+
+    document.querySelectorAll('.msg-copy').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const ta = document.querySelector(`.msg-body[data-i="${btn.dataset.i}"]`);
+        if (ta) copyText(ta.value, 'Správa skopírovaná.');
+      });
+    });
+
+    document.getElementById('msg-copy-all')?.addEventListener('click', () => {
+      const all = [...document.querySelectorAll('.msg-body')].map(t => t.value).join('\n\n———\n\n');
+      if (all) copyText(all, 'Všetky správy skopírované.');
+    });
+  }
+
   function computeShiftCounts(d) {
     const counts = new Map();
     for (const w of d.workers || []) counts.set(w.id, 0);
@@ -1971,6 +2125,7 @@
 
     return `
       ${buildQuickOverview()}
+      ${buildMessages()}
       <div class="card">
         <div class="section-title">🤖 Claude Agent — asistent pre rozvrh</div>
         <p class="text-muted" style="margin-bottom:14px">Pýtaj sa na brigádnikov, rozpis, dostupnosť... Agent vidí živé dáta z appky.</p>
@@ -1987,6 +2142,7 @@
 
   function attachAgent() {
     attachQuickOverview();
+    attachMessages();
     const chatEl = document.getElementById('agent-chat');
     if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
 
