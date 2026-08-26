@@ -358,45 +358,56 @@ tr:hover td { background: #fafafa; }
 
 /* ─── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 640px) {
-  .header { padding: 10px 14px; }
-  .header h1 { font-size: 1.1rem; }
+  .header { padding: 8px 12px; gap: 10px; }
+  .header h1 { font-size: 1rem; line-height: 1.25; }
+  .header .logo { height: 34px; }
+  .header .subtitle { font-size: 0.75rem; }
   .container { padding: 14px 10px; }
   .card { padding: 16px; }
-  .tabs { gap: 0; }
-  .tab-btn { padding: 8px 10px; font-size: 0.82rem; }
+
+  /* One scrollable strip beats wrapping onto a second line, which pushed the
+     content down and made the active tab hard to spot. */
+  .tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 0;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab-btn { padding: 9px 12px; font-size: 0.85rem; }
   .form-row { flex-direction: column; }
   .form-row .form-group { min-width: 0; }
   .shift-item { flex-wrap: wrap; gap: 6px; }
+  /* Grid items default to min-width:auto, so the longest label ("Nemôžem")
+     was widening every column and pushing Sunday off the screen. */
   .calendar { max-width: 100%; gap: 3px; }
+  .cal-day { min-width: 0; overflow: hidden; }
+  .cal-day .cal-lbl { font-size: 0.52rem; }
+  .cal-header { font-size: 0.62rem; }
 
-  /* Schedule as one card per day. A day × station grid needs more width than
-     a phone has, and sideways scrolling through it is unreadable — so the
-     columns become labelled rows and the date becomes the card header. */
+  /* One card per row. Any of these tables needs more width than a phone has,
+     and scrolling a grid sideways makes it unreadable — so the columns become
+     labelled rows stacked in a card. Labels come from the header cells via
+     data-label (set by stackTables in app.js); tables marked .stack-titled
+     put their first cell in the card header instead of labelling it. */
+  table, tbody, tr, td { display: block; width: auto; }
+  thead { display: none; }
   .sched-wrap { overflow-x: visible; }
-  .sched-table,
-  .sched-table tbody,
-  .sched-table tr,
-  .sched-table td { display: block; width: auto; }
-  .sched-table thead { display: none; }
-  .sched-table tr {
+
+  tbody tr {
+    background: var(--white);
     border: 1px solid var(--border);
     border-radius: 10px;
     overflow: hidden;
     margin-bottom: 12px;
   }
-  .sched-table td.sched-date {
-    background: var(--brand-navy);
-    color: #fff;
-    padding: 9px 12px;
-    border-bottom: none;
-    font-size: 0.95rem;
-  }
-  .sched-table td.sched-cell {
-    min-width: 0;
-    padding: 9px 12px;
-  }
-  .sched-table td.sched-cell:last-child { border-bottom: none; }
-  .sched-table td.sched-cell::before {
+  tbody tr:last-child { margin-bottom: 0; }
+
+  td { padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: 1px solid var(--border); }
+  tr td:last-child { border-bottom: none; }
+
+  td[data-label]::before {
     content: attr(data-label);
     display: block;
     font-size: 0.68rem;
@@ -406,4 +417,20 @@ tr:hover td { background: #fafafa; }
     color: #5d6d7e;
     margin-bottom: 4px;
   }
+
+  /* Specific enough to survive the tr:hover background. */
+  .stack-titled td.stack-head {
+    background: var(--brand-navy);
+    color: #fff;
+    border-bottom: none;
+    font-size: 0.95rem;
+  }
+  .stack-titled td.stack-head .text-muted { color: rgba(255,255,255,0.75); }
+
+  .sched-table td.sched-cell { min-width: 0; padding: 9px 12px; }
+
+  /* Editable rows read as a form on a phone, so give the fields room. */
+  td input[type=text], td input[type=password], td input[type=number],
+  td select, td .time-input { width: 100%; max-width: none; }
+  td .btn-sm { padding: 7px 12px; font-size: 0.84rem; }
 }

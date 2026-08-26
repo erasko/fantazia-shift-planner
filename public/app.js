@@ -5,6 +5,32 @@
     window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
   }
 
+  // ─── Mobile tables ────────────────────────────────────────────────────────
+  // A day × station grid needs more width than a phone has, so on narrow
+  // screens every table turns into one card per row (see .stack in styles.css).
+  // The column headers have to travel into the cells to stay meaningful, and
+  // that is done here rather than by repeating the header text across a dozen
+  // row builders. Tables marked .stack-titled use their first cell as the card
+  // header (a date or a name), which reads better than labelling it.
+  //
+  // Driven by an observer because views re-render through innerHTML in many
+  // places — including single tbody refreshes when a row is added or removed.
+  // The attributes it writes are inert on desktop: only the media query reads
+  // them, so nothing needs to re-run when the window is resized.
+  function stackTables(root) {
+    root.querySelectorAll('table').forEach(table => {
+      const heads = [...table.querySelectorAll('thead th')].map(th => th.textContent.trim());
+      if (!heads.length) return;
+      const titled = table.classList.contains('stack-titled');
+      table.querySelectorAll('tbody tr').forEach(tr => {
+        [...tr.children].forEach((td, i) => {
+          if (titled && i === 0) return td.classList.add('stack-head');
+          if (heads[i]) td.setAttribute('data-label', heads[i]);
+        });
+      });
+    });
+  }
+
   // ─── State ────────────────────────────────────────────────────────────────
   const S = {
     view: null, token: null, data: null,
@@ -26,6 +52,13 @@
 
   // ─── Utils ────────────────────────────────────────────────────────────────
   const app = document.getElementById('app');
+
+  // Called straight from the observer, not through requestAnimationFrame:
+  // rAF is paused while the tab is hidden, which would leave a view rendered
+  // in the background without its labels. Writing attributes doesn't disturb
+  // childList, so this cannot retrigger itself.
+  new MutationObserver(() => stackTables(app))
+    .observe(app, { childList: true, subtree: true });
 
   function esc(s) {
     return String(s == null ? '' : s)
@@ -544,30 +577,30 @@
       const cells = stations.map(st => {
         const cell = sched[date]?.[st.id] || {};
         if (cell.hidden) {
-          return `<td class="sched-cell" data-label="${esc(st.name)}" style="background:#f5f5f5;color:#aaa;font-size:.8rem;text-align:center">—</td>`;
+          return `<td class="sched-cell" style="background:#f5f5f5;color:#aaa;font-size:.8rem;text-align:center">—</td>`;
         }
         const names = (cell.workers || []);
         const time = `${cell.opensAt || ''}–${cell.closesAt || ''}`;
         const label = cell.stationName && cell.stationName !== st.name ? `<div style="font-size:.7rem;font-weight:600;color:var(--orange-dark);margin-bottom:2px">${esc(cell.stationName)}</div>` : '';
-        return `<td class="sched-cell" data-label="${esc(cell.stationName || st.name)}">
+        return `<td class="sched-cell">
           ${label}
           <div class="text-muted" style="font-size:.75rem;margin-bottom:3px">${esc(time)}</div>
           ${names.map(n => `<span class="worker-chip">${esc(n)}</span>`).join('') || '<span class="text-muted">—</span>'}
         </td>`;
       }).join('');
       const free = d.freeWorkers?.[date] || [];
-      const freeCell = `<td class="sched-cell" data-label="Voľní">${
+      const freeCell = `<td class="sched-cell">${
         free.length
           ? free.map(w => `<span class="free-chip" title="${esc(w.stations.join(' · '))} · ${w.shifts} zmien">${esc(w.name)}</span>`).join('')
           : '<span class="text-muted">—</span>'
       }</td>`;
-      return `<tr><td class="sched-date"><strong>${fmtShort(date)}</strong></td>${cells}${freeCell}</tr>`;
+      return `<tr><td><strong>${fmtShort(date)}</strong></td>${cells}${freeCell}</tr>`;
     }).join('');
 
     return `
       <div class="card">
         <div class="sched-wrap">
-          <table class="sched-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table>
+          <table class="sched-table stack-titled"><thead>${thead}</thead><tbody>${tbody}</tbody></table>
         </div>
       </div>`;
   }
@@ -643,7 +676,7 @@
       <p class="text-muted" style="margin-bottom:12px;font-size:.84rem">${OP_HOURS_NOTE}</p>
       <div id="op-hrs-msg"></div>
       ${todayLogs.length
-        ? `<div style="overflow-x:auto"><table>${OP_HOURS_TABLE_HEAD}<tbody>${operatorHourRows(todayLogs)}</tbody></table></div>`
+        ? `<div style="overflow-x:auto"><table class="stack-titled">${OP_HOURS_TABLE_HEAD}<tbody>${operatorHourRows(todayLogs)}</tbody></table></div>`
         : '<p class="text-muted">Dnes zatiaľ nikto nenahlásil hodiny.</p>'}
     </div>`;
 
@@ -682,7 +715,7 @@
         <p class="text-muted" style="margin-bottom:12px;font-size:.84rem">${OP_HOURS_NOTE}</p>
         <div id="op-hrs-msg"></div>
         <div style="overflow-x:auto">
-          <table>${OP_HOURS_TABLE_HEAD}<tbody>${operatorHourRows(logs)}</tbody></table>
+          <table class="stack-titled">${OP_HOURS_TABLE_HEAD}<tbody>${operatorHourRows(logs)}</tbody></table>
         </div>
       </div>`;
   }
@@ -985,7 +1018,7 @@
         ${calHtml}
         ${sortedOpen.length ? `
           <div class="section-title">Časy pre jednotlivé dni</div>
-          <table style="width:auto"><thead><tr><th>Deň</th><th>Od</th><th>Do</th></tr></thead>
+          <table class="stack-titled" style="width:auto"><thead><tr><th>Deň</th><th>Od</th><th>Do</th></tr></thead>
           <tbody id="dh-body">${dayRows}</tbody></table>` : ''}
       </div>
 
@@ -1054,7 +1087,7 @@
     const stnOpts = S.localStations.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
     const stnOpts2 = `<option value="">— nespájať —</option>` + S.localStations.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
     return `
-      ${rows ? `<table style="margin-bottom:12px;width:auto"><thead><tr><th>Deň</th><th>Stanovisko</th><th>Počet</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="text-muted" style="margin-bottom:10px">Žiadne výnimky.</p>'}
+      ${rows ? `<table class="stack-titled" style="margin-bottom:12px;width:auto"><thead><tr><th>Deň</th><th>Stanovisko</th><th>Počet</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="text-muted" style="margin-bottom:10px">Žiadne výnimky.</p>'}
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
         <div class="form-group" style="margin:0">
           <label>Deň</label><select id="ov-date" style="width:140px">${dayOpts}</select>
@@ -1350,7 +1383,7 @@
       <div class="card">
         <div class="alert alert-info" style="margin-bottom:14px">${submitted} z ${workers.length} brigádnikov odovzdalo dostupnosť</div>
         <div id="sub-msg2"></div>
-        <table>
+        <table class="stack-titled">
           <thead><tr><th>Meno</th><th>Stav</th><th>Nedostupné dni</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -1413,7 +1446,7 @@
       const stCells = stations.map(st => {
         const info = swnDay[st.id];
         if (info?.hidden) {
-          return `<td class="sched-cell" data-label="${esc(st.name)}" style="background:#f5f5f5;color:#aaa;font-size:.8rem;text-align:center">—</td>`;
+          return `<td class="sched-cell" style="background:#f5f5f5;color:#aaa;font-size:.8rem;text-align:center">—</td>`;
         }
         const stationLabel = info?.stationName || st.name;
         const labelHtml = stationLabel !== st.name
@@ -1439,7 +1472,7 @@
               </select>
             </div>` : '';
 
-        return `<td class="sched-cell" data-label="${esc(stationLabel)}">${labelHtml}${chips}${addSel}</td>`;
+        return `<td class="sched-cell">${labelHtml}${chips}${addSel}</td>`;
       }).join('');
 
       const free = (swnDay._free||[]);
@@ -1448,9 +1481,9 @@
         : '<span class="text-muted">—</span>';
 
       return `<tr>
-        <td class="sched-date" style="white-space:nowrap"><strong>${fmtShort(date)}</strong></td>
+        <td style="white-space:nowrap"><strong>${fmtShort(date)}</strong></td>
         ${stCells}
-        <td class="sched-cell" data-label="Voľní">${freeHtml}</td>
+        <td class="sched-cell">${freeHtml}</td>
       </tr>`;
     }).join('');
 
@@ -1475,7 +1508,7 @@
         </div>
         <div id="sched-msg"></div>
         <div class="sched-wrap">
-          <table class="sched-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table>
+          <table class="sched-table stack-titled"><thead>${thead}</thead><tbody>${tbody}</tbody></table>
         </div>
       </div>`;
   }
@@ -1621,7 +1654,7 @@
     return `
       <div class="card">
         <div id="req-msg"></div>
-        <table>
+        <table class="stack-titled">
           <thead><tr><th>Brigádnik</th><th>Podané</th><th>Dni</th><th>Dôvod</th><th>Stav</th><th>Akcia</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -1836,7 +1869,7 @@
           ${discrepancies.length ? `<span class="badge badge-danger">⚠ ${discrepancies.length} nezhôd</span>` : '<span class="badge badge-success">✓ Žiadne nezhody</span>'}
         </div>
         ${totalRows
-          ? `<div style="overflow-x:auto"><table style="width:auto">
+          ? `<div style="overflow-x:auto"><table class="stack-titled" style="width:auto">
               <thead><tr><th>Brigádnik</th><th>Zmeny</th><th>Schválené hodiny</th></tr></thead>
               <tbody>${totalRows}</tbody></table></div>`
           : '<p class="text-muted">Zatiaľ nič schválené.</p>'}
@@ -1849,7 +1882,7 @@
         <div class="section-title">Detail všetkých záznamov</div>
         <p class="text-muted" style="margin-bottom:10px;font-size:.84rem">Nezhoda znamená, že prevádzkar schválil iný čas, než brigádnik nahlásil. Prevádzkar nahlásený čas nevidí — schvaľuje nezávisle.</p>
         <div style="overflow-x:auto">
-          <table>
+          <table class="stack-titled">
             <thead><tr><th>Dátum</th><th>Stanovisko</th><th>Brigádnik</th><th>Nahlásil</th><th>Schválené</th><th>Kontrola</th><th>Schválil</th></tr></thead>
             <tbody>${detailRows}</tbody>
           </table>
@@ -2060,7 +2093,7 @@
 
         <div class="section-title" style="margin-top:18px">Zmeny a odpracované hodiny v mesiaci</div>
         <div style="overflow-x:auto">
-          <table style="width:auto"><thead><tr><th>Brigádnik</th><th>Zmeny</th><th>Hodiny</th></tr></thead><tbody>${countRows}</tbody></table>
+          <table class="stack-titled" style="width:auto"><thead><tr><th>Brigádnik</th><th>Zmeny</th><th>Hodiny</th></tr></thead><tbody>${countRows}</tbody></table>
         </div>
       </div>`;
   }
