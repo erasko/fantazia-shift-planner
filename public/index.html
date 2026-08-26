@@ -5,6 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Fantázia Shift Planner</title>
   <link rel="stylesheet" href="/styles.css">
+
+  <meta name="theme-color" content="#0c2372">
+  <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+
+  <!-- iOS reads only these meta tags for "Add to Home Screen", not manifest.json -->
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Fantázia">
+
+  <script>
+    // Manifest is generated per-URL so installing from a worker/operator
+    // link opens straight to that link, not the admin login.
+    (function () {
+      var link = document.createElement('link');
+      link.rel = 'manifest';
+      link.href = '/manifest.json?start=' + encodeURIComponent(location.pathname);
+      document.head.appendChild(link);
+    })();
+  </script>
 </head>
 <body>
   <div id="app">

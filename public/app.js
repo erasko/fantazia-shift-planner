@@ -1,6 +1,10 @@
 (function () {
   'use strict';
 
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+  }
+
   // ─── State ────────────────────────────────────────────────────────────────
   const S = {
     view: null, token: null, data: null,

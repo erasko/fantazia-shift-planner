@@ -1081,6 +1081,30 @@ async function handleRequest(req, res) {
     return respond(res, 200, { ok: true, storage: pool ? 'postgres' : 'json' });
   }
 
+  // Web app manifest — start_url matches whichever page (admin/worker/operator)
+  // it was installed from, since worker/operator access has no login, just a URL.
+  if (req.method === 'GET' && p === '/manifest.json') {
+    const startParam = url.searchParams.get('start') || '/';
+    const start = /^\/(worker|operator)\/[a-zA-Z0-9]+$/.test(startParam) ? startParam : '/';
+    const manifest = {
+      name: 'Fantázia Shift Planner',
+      short_name: 'Fantázia',
+      description: 'Rozpis zmien pre brigádnikov v zábavnom parku Fantázia Liptov',
+      start_url: start,
+      scope: '/',
+      display: 'standalone',
+      background_color: '#ffffff',
+      theme_color: '#0c2372',
+      orientation: 'portrait-primary',
+      icons: [
+        { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+        { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+      ],
+    };
+    res.writeHead(200, { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify(manifest));
+  }
+
   // Public config
   if (req.method === 'GET' && p === '/api/public-config') {
     const store = await getStore();
