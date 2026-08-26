@@ -905,7 +905,7 @@
       case 'submissions': el.innerHTML = buildSubmissions(); attachSubmissions(); break;
       case 'schedule':    el.innerHTML = buildSchedule();    attachSchedule();    break;
       case 'skupiny':     el.innerHTML = buildSkupiny();     attachSkupiny();     break;
-      case 'hodiny':      el.innerHTML = buildAdminHours();                       break;
+      case 'hodiny':      el.innerHTML = buildAdminHours();  attachAdminHours();  break;
       case 'requests':    el.innerHTML = buildRequests();    attachRequests();    break;
       case 'exports':     el.innerHTML = buildExports();                          break;
       case 'agent':       el.innerHTML = buildAgent();       attachAgent();       break;
@@ -1840,12 +1840,14 @@
         const who = h.substituteFor
           ? `${esc(h.workerName)} <span class="text-muted" style="font-size:.76rem">(za ${esc(h.substituteForName||'?')})</span>`
           : esc(h.workerName);
+        const delBtn = `<button class="btn btn-danger btn-sm del-hour" data-id="${esc(h.id)}"
+          data-who="${esc(h.workerName)}" data-date="${fmtShort(h.date)}" title="Zmazať záznam">×</button>`;
         if (h.status !== 'approved') {
           return `<tr>
             <td>${fmtShort(h.date)}</td><td>${stn}</td><td>${who}</td>
             <td>${esc(h.reportedStart)}–${esc(h.reportedEnd)}</td>
             <td><span class="badge badge-warning">⏳ Čaká</span></td>
-            <td>—</td><td>—</td>
+            <td>—</td><td>—</td><td>${delBtn}</td>
           </tr>`;
         }
         const mismatch = (h.reportedStart !== h.approvedStart || h.reportedEnd !== h.approvedEnd);
@@ -1858,6 +1860,7 @@
             ? `<span class="badge badge-danger">⚠ Nezhoda ${diffH > 0 ? '+' : ''}${diffH.toFixed(1)} h</span>`
             : '<span class="badge badge-success">✓ Zhoda</span>'}</td>
           <td class="text-muted" style="font-size:.8rem">${esc(h.approvedByName || '')}</td>
+          <td>${delBtn}</td>
         </tr>`;
       }).join('');
 
@@ -1883,11 +1886,30 @@
         <p class="text-muted" style="margin-bottom:10px;font-size:.84rem">Nezhoda znamená, že prevádzkar schválil iný čas, než brigádnik nahlásil. Prevádzkar nahlásený čas nevidí — schvaľuje nezávisle.</p>
         <div style="overflow-x:auto">
           <table class="stack-titled">
-            <thead><tr><th>Dátum</th><th>Stanovisko</th><th>Brigádnik</th><th>Nahlásil</th><th>Schválené</th><th>Kontrola</th><th>Schválil</th></tr></thead>
+            <thead><tr><th>Dátum</th><th>Stanovisko</th><th>Brigádnik</th><th>Nahlásil</th><th>Schválené</th><th>Kontrola</th><th>Schválil</th><th></th></tr></thead>
             <tbody>${detailRows}</tbody>
           </table>
         </div>
+        <div id="hour-msg" style="margin-top:8px"></div>
       </div>`;
+  }
+
+  function attachAdminHours() {
+    document.querySelectorAll('.del-hour').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const { id, who, date } = btn.dataset;
+        if (!confirm(`Zmazať zápis hodín — ${who}, ${date}?\n\nZáznam sa nedá vrátiť.`)) return;
+        btn.disabled = true;
+        try {
+          await api('DELETE', `/api/hour-logs/${id}`);
+          S.data = await api('GET', '/api/admin');
+          syncLocal(); S.tab = 'hodiny'; renderPanel();
+        } catch (e) {
+          setMsg('hour-msg', `<div class="alert alert-error">Chyba: ${esc(e.message)}</div>`);
+          btn.disabled = false;
+        }
+      });
+    });
   }
 
   // ─── AGENT TAB ────────────────────────────────────────────────────────────

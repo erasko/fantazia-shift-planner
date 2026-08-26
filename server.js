@@ -1465,6 +1465,21 @@ async function handleRequest(req, res) {
     return respond(res, 200, { ok: true });
   }
 
+  // Admin — delete an hour log. Admin only: these entries are the record a
+  // pay dispute would be settled from, so neither the worker who reported it
+  // nor the operator who approved it can remove one. Needed for test entries
+  // and for a shift logged against the wrong station, which no correction
+  // can fix — a correction rewrites an entry, it cannot take one back.
+  const delHourM = p.match(/^\/api\/hour-logs\/([^/]+)$/);
+  if (delHourM && req.method === 'DELETE') {
+    if (!requireAdmin(req, res)) return;
+    const before = (await getStore()).hourLogs?.length || 0;
+    await mutateStore((s) => { s.hourLogs = (s.hourLogs || []).filter((h) => h.id !== delHourM[1]); });
+    const after = (await getStore()).hourLogs?.length || 0;
+    if (before === after) return respond(res, 404, { error: 'Záznam neexistuje' });
+    return respond(res, 200, { ok: true });
+  }
+
   // Admin — approve change request
   const approveM = p.match(/^\/api\/change-requests\/([^/]+)\/approve$/);
   if (approveM && req.method === 'POST') {
