@@ -544,24 +544,24 @@
       const cells = stations.map(st => {
         const cell = sched[date]?.[st.id] || {};
         if (cell.hidden) {
-          return `<td class="sched-cell" style="background:#f5f5f5;color:#aaa;font-size:.8rem;text-align:center">—</td>`;
+          return `<td class="sched-cell" data-label="${esc(st.name)}" style="background:#f5f5f5;color:#aaa;font-size:.8rem;text-align:center">—</td>`;
         }
         const names = (cell.workers || []);
         const time = `${cell.opensAt || ''}–${cell.closesAt || ''}`;
         const label = cell.stationName && cell.stationName !== st.name ? `<div style="font-size:.7rem;font-weight:600;color:var(--orange-dark);margin-bottom:2px">${esc(cell.stationName)}</div>` : '';
-        return `<td class="sched-cell">
+        return `<td class="sched-cell" data-label="${esc(cell.stationName || st.name)}">
           ${label}
           <div class="text-muted" style="font-size:.75rem;margin-bottom:3px">${esc(time)}</div>
           ${names.map(n => `<span class="worker-chip">${esc(n)}</span>`).join('') || '<span class="text-muted">—</span>'}
         </td>`;
       }).join('');
       const free = d.freeWorkers?.[date] || [];
-      const freeCell = `<td class="sched-cell">${
+      const freeCell = `<td class="sched-cell" data-label="Voľní">${
         free.length
           ? free.map(w => `<span class="free-chip" title="${esc(w.stations.join(' · '))} · ${w.shifts} zmien">${esc(w.name)}</span>`).join('')
           : '<span class="text-muted">—</span>'
       }</td>`;
-      return `<tr><td><strong>${fmtShort(date)}</strong></td>${cells}${freeCell}</tr>`;
+      return `<tr><td class="sched-date"><strong>${fmtShort(date)}</strong></td>${cells}${freeCell}</tr>`;
     }).join('');
 
     return `
@@ -1413,7 +1413,7 @@
       const stCells = stations.map(st => {
         const info = swnDay[st.id];
         if (info?.hidden) {
-          return `<td class="sched-cell" style="background:#f5f5f5;color:#aaa;font-size:.8rem;text-align:center">—</td>`;
+          return `<td class="sched-cell" data-label="${esc(st.name)}" style="background:#f5f5f5;color:#aaa;font-size:.8rem;text-align:center">—</td>`;
         }
         const stationLabel = info?.stationName || st.name;
         const labelHtml = stationLabel !== st.name
@@ -1439,7 +1439,7 @@
               </select>
             </div>` : '';
 
-        return `<td class="sched-cell">${labelHtml}${chips}${addSel}</td>`;
+        return `<td class="sched-cell" data-label="${esc(stationLabel)}">${labelHtml}${chips}${addSel}</td>`;
       }).join('');
 
       const free = (swnDay._free||[]);
@@ -1448,9 +1448,9 @@
         : '<span class="text-muted">—</span>';
 
       return `<tr>
-        <td style="white-space:nowrap"><strong>${fmtShort(date)}</strong></td>
+        <td class="sched-date" style="white-space:nowrap"><strong>${fmtShort(date)}</strong></td>
         ${stCells}
-        <td class="sched-cell">${freeHtml}</td>
+        <td class="sched-cell" data-label="Voľní">${freeHtml}</td>
       </tr>`;
     }).join('');
 

@@ -368,4 +368,42 @@ tr:hover td { background: #fafafa; }
   .form-row .form-group { min-width: 0; }
   .shift-item { flex-wrap: wrap; gap: 6px; }
   .calendar { max-width: 100%; gap: 3px; }
+
+  /* Schedule as one card per day. A day × station grid needs more width than
+     a phone has, and sideways scrolling through it is unreadable — so the
+     columns become labelled rows and the date becomes the card header. */
+  .sched-wrap { overflow-x: visible; }
+  .sched-table,
+  .sched-table tbody,
+  .sched-table tr,
+  .sched-table td { display: block; width: auto; }
+  .sched-table thead { display: none; }
+  .sched-table tr {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .sched-table td.sched-date {
+    background: var(--brand-navy);
+    color: #fff;
+    padding: 9px 12px;
+    border-bottom: none;
+    font-size: 0.95rem;
+  }
+  .sched-table td.sched-cell {
+    min-width: 0;
+    padding: 9px 12px;
+  }
+  .sched-table td.sched-cell:last-child { border-bottom: none; }
+  .sched-table td.sched-cell::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #5d6d7e;
+    margin-bottom: 4px;
+  }
 }
