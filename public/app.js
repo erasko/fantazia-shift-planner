@@ -16,7 +16,6 @@
     localGroups: [],
     activeGroup: null,
     schedEdits: {},
-    agentHistory: [],
     opTab: 'dnes',
     msgType: 'availability',
   };
@@ -2112,69 +2111,14 @@
   }
 
   function buildAgent() {
-    const msgs = S.agentHistory.map(m => {
-      if (m.role === 'user') {
-        return `<div style="display:flex;justify-content:flex-end;margin-bottom:8px">
-          <div style="background:var(--brand-navy);color:#fff;padding:9px 14px;border-radius:14px 14px 4px 14px;max-width:75%;font-size:.88rem">${esc(m.text)}</div>
-        </div>`;
-      }
-      return `<div style="display:flex;justify-content:flex-start;margin-bottom:8px">
-        <div style="background:#f0f4ff;color:var(--text);padding:9px 14px;border-radius:14px 14px 14px 4px;max-width:85%;font-size:.88rem;white-space:pre-wrap">${esc(m.text)}</div>
-      </div>`;
-    }).join('');
-
     return `
       ${buildQuickOverview()}
-      ${buildMessages()}
-      <div class="card">
-        <div class="section-title">🤖 Claude Agent — asistent pre rozvrh</div>
-        <p class="text-muted" style="margin-bottom:14px">Pýtaj sa na brigádnikov, rozpis, dostupnosť... Agent vidí živé dáta z appky.</p>
-        <div id="agent-chat" style="min-height:200px;max-height:420px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;background:#fafafa">
-          ${msgs || '<p class="text-muted" style="text-align:center;padding:30px 0">Začni konverzáciu — napíš otázku dole.</p>'}
-        </div>
-        <div style="display:flex;gap:8px">
-          <input type="text" id="agent-input" placeholder="Napr.: Kto je dostupný 5. septembra?" style="flex:1">
-          <button class="btn btn-primary" id="agent-send">Odoslať</button>
-        </div>
-        <div id="agent-msg" style="margin-top:6px"></div>
-      </div>`;
+      ${buildMessages()}`;
   }
 
   function attachAgent() {
     attachQuickOverview();
     attachMessages();
-    const chatEl = document.getElementById('agent-chat');
-    if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
-
-    async function sendMessage() {
-      const inp = document.getElementById('agent-input');
-      const question = inp?.value?.trim();
-      if (!question) return;
-      inp.value = '';
-      const btn = document.getElementById('agent-send');
-      btn.disabled = true; btn.textContent = '...';
-
-      S.agentHistory.push({ role: 'user', text: question });
-      document.getElementById('tab-content').innerHTML = buildAgent();
-      attachAgent();
-      const chat = document.getElementById('agent-chat');
-      if (chat) chat.scrollTop = chat.scrollHeight;
-
-      try {
-        const r = await api('POST', '/api/agent-chat', { question });
-        S.agentHistory.push({ role: 'assistant', text: r.answer });
-      } catch (e) {
-        S.agentHistory.push({ role: 'assistant', text: `Chyba: ${e.message}` });
-      }
-      document.getElementById('tab-content').innerHTML = buildAgent();
-      attachAgent();
-    }
-
-    document.getElementById('agent-send')?.addEventListener('click', sendMessage);
-    document.getElementById('agent-input')?.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-    });
-    setTimeout(() => document.getElementById('agent-input')?.focus(), 50);
   }
 
   // ─── Global 24h time input formatting ───────────────────────────────────────
