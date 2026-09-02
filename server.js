@@ -13,6 +13,9 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
 const AGENT_API_KEY = process.env.AGENT_API_KEY || null;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'store.json');
+// Reported by /api/health. Admin sessions live in memory, so this doubles as
+// "when did everyone get logged out".
+const STARTED_AT = new Date().toISOString();
 
 // ─── Postgres ─────────────────────────────────────────────────────────────────
 
@@ -1102,9 +1105,16 @@ async function handleRequest(req, res) {
   const p = url.pathname;
   const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
 
-  // Health
+  // Health. Reports the commit it is running so "did the fix actually deploy?"
+  // is answerable from outside — Render puts none of that in its headers, and
+  // a server-side change is otherwise invisible without a login or a token.
   if (req.method === 'GET' && p === '/api/health') {
-    return respond(res, 200, { ok: true, storage: pool ? 'postgres' : 'json' });
+    return respond(res, 200, {
+      ok: true,
+      storage: pool ? 'postgres' : 'json',
+      commit: (process.env.RENDER_GIT_COMMIT || 'local').slice(0, 7),
+      startedAt: STARTED_AT,
+    });
   }
 
   // Web app manifest — start_url matches whichever page (admin/worker/operator)
