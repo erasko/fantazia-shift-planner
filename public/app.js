@@ -969,7 +969,10 @@
     const monthChips = known.length > 1
       ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
           <span class="text-muted" style="font-size:.82rem">Mesiace:</span>
-          ${known.map(m => `<button class="btn btn-sm month-jump${m === d.month ? ' btn-primary' : ' btn-secondary'}" data-month="${esc(m)}">${esc(m)}${pubMonths.includes(m) ? ' ✓' : ''}</button>`).join('')}
+          ${known.map(m => `<span style="display:inline-flex;gap:2px;align-items:center">
+            <button class="btn btn-sm month-jump${m === d.month ? ' btn-primary' : ' btn-secondary'}" data-month="${esc(m)}">${esc(m)}${pubMonths.includes(m) ? ' ✓' : ''}</button>
+            ${m === d.month ? '' : `<button class="btn btn-danger btn-sm month-del" data-month="${esc(m)}" title="Zmazať obdobie ${esc(m)}">×</button>`}
+          </span>`).join('')}
         </div>`
       : '';
     const otherPubNote = otherPublished.length
@@ -1116,6 +1119,33 @@
         try {
           S.data = await api('PUT', '/api/config', { month });
           syncLocal(); S.tab = 'settings'; renderPanel();
+        } catch (e) {
+          setMsg('set-msg', `<div class="alert alert-error">Chyba: ${esc(e.message)}</div>`);
+          btn.disabled = false;
+        }
+      });
+    });
+
+    document.querySelectorAll('.month-del').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const month = btn.dataset.month;
+        const pub = (S.data.publishedMonths || []).includes(month);
+        const days = Object.keys(S.data.scheduleWithNames || {}).length;
+        if (!confirm(
+          `Zmazať obdobie ${month}?\n\n`
+          + `Zmizne jeho rozpis, otvorené dni aj ručné úpravy`
+          + (pub ? ', a prestane byť viditeľné brigádnikom' : '')
+          + `.\n\nOdovzdaná dostupnosť a zapísané hodiny zostanú — sú to záznamy o tom, čo sa naozaj stalo.\n\nNedá sa vrátiť.`
+        )) return;
+        btn.disabled = true;
+        try {
+          const r = await api('DELETE', `/api/periods/${month}`);
+          S.data = await api('GET', '/api/admin');
+          syncLocal(); S.tab = 'settings'; renderPanel();
+          const rm = r.removed || {};
+          setMsg('set-msg', `<div class="alert alert-success">✓ Obdobie ${esc(month)} zmazané`
+            + ` — ${rm.scheduleDays || 0} dní rozpisu, ${rm.manualDays || 0} dní ručných úprav`
+            + `${rm.wasPublished ? ', zrušené zverejnenie' : ''}.</div>`);
         } catch (e) {
           setMsg('set-msg', `<div class="alert alert-error">Chyba: ${esc(e.message)}</div>`);
           btn.disabled = false;
@@ -1480,8 +1510,16 @@
         ? free.map(w => `<span class="free-chip">${esc(w.name)}</span>`).join('')
         : '<span class="text-muted">—</span>';
 
+      // Swapping one name for another is the common mid-month edit, and doing
+      // it chip by chip means finding the cell, deleting, picking, saving the
+      // whole grid. This asks only who is out and who is in.
+      const swapBtn = assignedToday.size
+        ? `<button class="btn btn-secondary btn-sm swap-btn" data-date="${date}"
+             style="margin-top:6px;white-space:nowrap">⇄ Zámena</button>`
+        : '';
+
       return `<tr>
-        <td style="white-space:nowrap"><strong>${fmtShort(date)}</strong></td>
+        <td style="white-space:nowrap"><strong>${fmtShort(date)}</strong><br>${swapBtn}</td>
         ${stCells}
         <td class="sched-cell">${freeHtml}</td>
       </tr>`;
@@ -1513,7 +1551,106 @@
       </div>`;
   }
 
+  // Who is on which station that day, straight from the saved roster — not
+  // from S.schedEdits, since a swap is sent to the server on its own and must
+  // not carry along whatever is half-edited in the grid.
+  function assignmentsOn(date) {
+    const day = S.data.scheduleWithNames?.[date] || {};
+    const out = [];
+    for (const [sid, info] of Object.entries(day)) {
+      if (sid.startsWith('_') || info.hidden) continue;
+      for (const wid of (info.workerIds || [])) {
+        out.push({ wid, sid, stationName: info.stationName || sid });
+      }
+    }
+    return out;
+  }
+
+  function openSwapDialog(date) {
+    const d = S.data;
+    const assigned = assignmentsOn(date);
+    if (!assigned.length) return;
+
+    const nameOf = id => (d.workers || []).find(w => w.id === id)?.name || id;
+    const outOpts = assigned
+      .map((a, i) => `<option value="${i}">${esc(nameOf(a.wid))} — ${esc(a.stationName)}</option>`)
+      .join('');
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(12,35,114,0.45);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px';
+    overlay.innerHTML = `
+      <div class="card" style="max-width:440px;width:100%;margin:0">
+        <div class="section-title">Zámena — ${fmtFull(date)}</div>
+        <div class="form-group">
+          <label>Kto vypadol</label>
+          <select id="sw-out">${outOpts}</select>
+        </div>
+        <div class="form-group">
+          <label>Kto ho zastúpi</label>
+          <select id="sw-in"></select>
+        </div>
+        <div id="sw-msg" style="margin-bottom:10px"></div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button class="btn btn-primary" id="sw-ok" style="width:100%">Potvrdiť zámenu</button>
+          <button class="btn btn-secondary" id="sw-cancel" style="width:100%">Zrušiť</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+
+    // Candidates depend on the station picked, so refill on every change:
+    // trained for that station (or the one it is merged with), and not already
+    // working elsewhere that day. Someone who said they cannot make it is
+    // still offered, flagged — you may well have just phoned them.
+    const fillIn = () => {
+      const a = assigned[Number(overlay.querySelector('#sw-out').value)];
+      const day = d.scheduleWithNames?.[date] || {};
+      const info = day[a.sid] || {};
+      const stationIds = new Set([a.sid, ...(info.mergeWith ? [info.mergeWith] : [])]);
+      const busy = new Set(assigned.map(x => x.wid));
+      const cands = (d.workers || [])
+        .filter(w => !busy.has(w.id) && (w.allowedStations || []).some(sid => stationIds.has(sid)))
+        .map(w => ({ w, unavail: (w.unavailableDays || []).includes(date) }))
+        .sort((x, y) => (x.unavail - y.unavail)
+          || ((d.workerHours?.[x.w.id]?.hours || 0) - (d.workerHours?.[y.w.id]?.hours || 0)));
+      const sel = overlay.querySelector('#sw-in');
+      sel.innerHTML = cands.length
+        ? cands.map(c => `<option value="${esc(c.w.id)}">${c.unavail ? '⚠ ' : ''}${esc(c.w.name)}${c.unavail ? ' (nahlásil, že nemôže)' : ''} — ${(d.workerHours?.[c.w.id]?.hours || 0).toFixed(1)} h</option>`).join('')
+        : '<option value="">Nikto vhodný nie je voľný</option>';
+      overlay.querySelector('#sw-ok').disabled = !cands.length;
+    };
+    fillIn();
+    overlay.querySelector('#sw-out').addEventListener('change', fillIn);
+
+    overlay.querySelector('#sw-cancel').addEventListener('click', close);
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+    overlay.querySelector('#sw-ok').addEventListener('click', async () => {
+      const a = assigned[Number(overlay.querySelector('#sw-out').value)];
+      const inId = overlay.querySelector('#sw-in').value;
+      if (!inId) return;
+      const btn = overlay.querySelector('#sw-ok');
+      btn.disabled = true; btn.textContent = 'Ukladám…';
+      try {
+        S.data = await api('POST', '/api/swap', { date, stationId: a.sid, out: a.wid, in: inId });
+        syncLocal();
+        close();
+        S.tab = 'schedule';
+        renderPanel();
+        setMsg('sched-msg', `<div class="alert alert-success">✓ Zámena uložená — ${esc(nameOf(inId))} nahradil(a) ${esc(nameOf(a.wid))}.${
+          S.data.schedulePublished ? ' Rozpis je zverejnený, takže to brigádnici aj prevádzkar vidia hneď.' : ''}</div>`);
+      } catch (e) {
+        overlay.querySelector('#sw-msg').innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+        btn.disabled = false; btn.textContent = 'Potvrdiť zámenu';
+      }
+    });
+  }
+
   function attachSchedule() {
+    document.querySelectorAll('.swap-btn').forEach(btn => {
+      btn.addEventListener('click', () => openSwapDialog(btn.dataset.date));
+    });
+
     // Remove worker chip
     document.querySelectorAll('.chip-x').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -1591,11 +1728,19 @@
 
     // Save manual assignments
     document.getElementById('save-sched')?.addEventListener('click', async () => {
+      // Saving no longer unpublishes, so on a published month the edit goes
+      // straight to everyone's phone. Say so before it does.
+      if (S.data.schedulePublished
+        && !confirm('Rozpis je zverejnený — zmena sa hneď zobrazí brigádnikom aj prevádzkarovi.\n\nUložiť?')) {
+        return;
+      }
       const btn = document.getElementById('save-sched');
       btn.disabled = true; btn.textContent = 'Ukladám...';
       try {
         S.data = await api('PUT', '/api/manual-assignments', { assignments: S.schedEdits });
         syncLocal(); S.tab = 'schedule'; renderPanel();
+        setMsg('sched-msg', '<div class="alert alert-success">✓ Zmeny uložené.'
+          + (S.data.schedulePublished ? ' Rozpis zostáva zverejnený.' : '') + '</div>');
       } catch (e) {
         setMsg('sched-msg', `<div class="alert alert-error">Chyba: ${esc(e.message)}</div>`);
         btn.disabled = false; btn.textContent = 'Uložiť zmeny';

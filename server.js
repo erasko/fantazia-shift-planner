@@ -65,6 +65,9 @@ function defaultStore() {
     schedulePublished: false,
     changeRequests: [],
     hourLogs: [],
+    // Who replaced whom on a single day, appended by /api/swap. Keeps a record
+    // of a dropout the roster itself no longer shows.
+    swaps: [],
     // Per-month archive of period settings, so switching the admin's working
     // month doesn't overwrite another month's dates/open days.
     periods: {},
@@ -689,6 +692,9 @@ function adminView(store) {
     scheduleWithNames,
     workerHours: Object.fromEntries([...computeWorkerHours(store)].map(([wid, v]) => [wid, v])),
     changeRequests: store.changeRequests || [],
+    // Newest first: a swapped-out name is gone from the roster, so this is the
+    // only place a dropout leaves a trace.
+    swaps: [...(store.swaps || [])].sort((a, b) => (b.at || '').localeCompare(a.at || '')),
     // Only months worth offering as a switch target: the current one, any
     // published one, and any that actually has days set up.
     knownMonths: [...new Set([
@@ -1477,9 +1483,111 @@ async function handleRequest(req, res) {
           s.manualAssignments[s.month][date][stationId] = workerIds;
         }
       }
-      setMonthPublished(s, s.month, false);
+      // Deliberately does not unpublish. A published month is what workers and
+      // operators are looking at, and a mid-month edit is usually made because
+      // reality changed — pulling the whole roster off their phones until
+      // someone remembers to publish again is worse than the edit going live.
+      // Regenerating still unpublishes: a fresh roster wants reviewing first.
     });
     return respond(res, 200, adminView(await getStore()));
+  }
+
+  // Admin — swap one person for another on a single day.
+  //
+  // The chip-by-chip edit could already do this, but it means finding the right
+  // cell, removing one name, picking another from a dropdown and saving the
+  // whole grid — on a phone, in a hurry, with someone already not turning up.
+  // This takes the two names and touches nothing else, and since a published
+  // month now stays published, the operator sees the new name straight away.
+  if (req.method === 'POST' && p === '/api/swap') {
+    if (!requireAdmin(req, res)) return;
+    const body = await parseBody(req);
+    const store = await getStore();
+    const { date, stationId } = body;
+    const outId = body.out;
+    const inId = body.in;
+
+    if (!date || !stationId || !outId || !inId) return respond(res, 400, { error: 'Chýbajú údaje' });
+    if (outId === inId) return respond(res, 400, { error: 'Vyber dvoch rôznych ľudí' });
+
+    const month = store.month;
+    if (!date.startsWith(month) || !(store.openDays || []).includes(date)) {
+      return respond(res, 400, { error: 'Ten deň nie je otvorený v tomto mesiaci' });
+    }
+    const station = (store.stations || []).find((s) => s.id === stationId);
+    if (!station) return respond(res, 404, { error: 'Stanovisko neexistuje' });
+
+    const outW = (store.workers || []).find((w) => w.id === outId);
+    const inW = (store.workers || []).find((w) => w.id === inId);
+    if (!outW || !inW) return respond(res, 404, { error: 'Brigádnik neexistuje' });
+
+    const sched = effectiveSchedule(store, month);
+    const current = sched[date]?.[stationId] || [];
+    if (!current.includes(outId)) {
+      return respond(res, 400, { error: `${outW.name} v ten deň na tomto stanovisku nie je` });
+    }
+    // Nobody works two stations at once.
+    const elsewhere = Object.entries(sched[date] || {})
+      .find(([sid, ids]) => sid !== stationId && Array.isArray(ids) && ids.includes(inId));
+    if (elsewhere) {
+      const other = (store.stations || []).find((s) => s.id === elsewhere[0]);
+      return respond(res, 400, { error: `${inW.name} už v ten deň robí na ${other?.name || 'inom stanovisku'}` });
+    }
+
+    await mutateStore((s) => {
+      if (!s.manualAssignments) s.manualAssignments = {};
+      if (!s.manualAssignments[s.month]) s.manualAssignments[s.month] = {};
+      if (!s.manualAssignments[s.month][date]) s.manualAssignments[s.month][date] = {};
+      s.manualAssignments[s.month][date][stationId] = current.map((id) => (id === outId ? inId : id));
+      if (!Array.isArray(s.swaps)) s.swaps = [];
+      s.swaps.push({
+        id: generateToken(),
+        date,
+        stationId,
+        stationName: station.name,
+        outId,
+        outName: outW.name,
+        inId,
+        inName: inW.name,
+        at: new Date().toISOString(),
+      });
+    });
+
+    return respond(res, 200, adminView(await getStore()));
+  }
+
+  // Admin — delete a month's period, roster and manual edits.
+  //
+  // Refuses the month being edited: that is the one the flat fields describe,
+  // and emptying it underneath the open editor invites exactly the kind of
+  // mismatch this was added to clean up. Availability submissions and hour
+  // logs are records of what people did and are left alone.
+  const delPeriodM = p.match(/^\/api\/periods\/(\d{4}-\d{2})$/);
+  if (delPeriodM && req.method === 'DELETE') {
+    if (!requireAdmin(req, res)) return;
+    const month = delPeriodM[1];
+    const store = await getStore();
+    if (month === store.month) {
+      return respond(res, 400, {
+        error: 'Toto je práve upravovaný mesiac. Prepni sa najprv na iný a potom ho zmaž.',
+      });
+    }
+    const removed = {
+      period: Boolean(store.periods?.[month]),
+      scheduleDays: Object.keys(store.schedule?.[month] || {}).length,
+      manualDays: Object.keys(store.manualAssignments?.[month] || {}).length,
+      wasPublished: (store.publishedMonths || []).includes(month),
+    };
+    if (!removed.period && !removed.scheduleDays && !removed.manualDays && !removed.wasPublished) {
+      return respond(res, 404, { error: 'O tomto mesiaci appka nič nedrží' });
+    }
+    await mutateStore((s) => {
+      delete s.periods?.[month];
+      delete s.schedule?.[month];
+      delete s.manualAssignments?.[month];
+      s.publishedMonths = (s.publishedMonths || []).filter((m) => m !== month);
+    });
+    return respond(res, 200, { ok: true, month, removed });
   }
 
   // Admin — publish / unpublish the month currently being edited
