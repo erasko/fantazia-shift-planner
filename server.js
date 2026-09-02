@@ -409,7 +409,13 @@ function generateSchedule(store) {
   const assignments = {};
   const assignedOnDay = {};
 
-  for (const date of [...store.openDays].sort()) {
+  // Only days belonging to the month being generated. The flat open days
+  // describe the month the admin is editing; the result is filed under
+  // store.month. Generating while those disagree used to write one month's
+  // days into another month's key.
+  const days = [...store.openDays].filter((d) => d.startsWith(store.month)).sort();
+
+  for (const date of days) {
     assignments[date] = {};
     assignedOnDay[date] = new Set();
 
@@ -461,6 +467,25 @@ function effectiveSchedule(store, month = store.month) {
   return merged;
 }
 
+// The only dates a month's schedule may speak for: its own, still-open days.
+//
+// Two ways stale dates end up under a month key. The generator walks the flat
+// open days — which describe whichever month the admin is editing — and files
+// the result under store.month, so if those ever disagree, one month's key
+// holds another month's days. And closing a day leaves its assignments behind.
+// Either way the admin table, which draws only the current open days, cannot
+// see them, while anything reading the schedule's own keys can — which is how
+// workers came to be shown a roster that did not match the one on screen.
+//
+// Every reader goes through here so a stray date is invisible everywhere,
+// rather than in some views and not others.
+function scheduledDates(store, month) {
+  const open = new Set(periodFor(store, month).openDays || []);
+  return Object.keys(effectiveSchedule(store, month))
+    .filter((date) => date.startsWith(month) && open.has(date))
+    .sort();
+}
+
 // Shifts across every published month, so a worker keeps seeing September's
 // roster while the admin collects availability for October.
 function workerScheduleData(store, worker) {
@@ -469,7 +494,8 @@ function workerScheduleData(store, worker) {
   const shifts = [];
   for (const month of months) {
     const sched = effectiveSchedule(store, month);
-    for (const [date, stations] of Object.entries(sched)) {
+    for (const date of scheduledDates(store, month)) {
+      const stations = sched[date] || {};
       const dayOv = store.daySettings?.[date]?.stationOverrides || {};
       for (const [stationId, workerIds] of Object.entries(stations)) {
         if (!workerIds.includes(worker.id)) continue;
@@ -539,8 +565,8 @@ function operatorFreeWorkers(store) {
   for (const w of store.workers) shiftCount.set(w.id, 0);
   for (const month of store.publishedMonths || []) {
     const sched = effectiveSchedule(store, month);
-    for (const stations of Object.values(sched)) {
-      for (const wids of Object.values(stations)) {
+    for (const date of scheduledDates(store, month)) {
+      for (const wids of Object.values(sched[date] || {})) {
         for (const id of wids) shiftCount.set(id, (shiftCount.get(id) || 0) + 1);
       }
     }
@@ -678,7 +704,7 @@ function computeWorkerHours(store) {
   const sched = effectiveSchedule(store);
   const hours = new Map();
   for (const w of store.workers) hours.set(w.id, { shifts: 0, hours: 0 });
-  for (const date of Object.keys(sched)) {
+  for (const date of scheduledDates(store, store.month)) {
     const dayOv = store.daySettings?.[date]?.stationOverrides || {};
     for (const station of store.stations) {
       const ov = dayOv[station.id];
