@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="UTF-8">
+<title>Fantázia — návod pre brigádnikov</title>
+<style>
+  :root {
+    --navy: #0c2372;
+    --orange: #f99300;
+    --red: #da001c;
+    --cream: #fdfaf4;
+    --ink: #1a2340;
+    --muted: #6b7280;
+    --rule: #e6e2d8;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: #8a8a8a;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .page {
+    width: 148mm;
+    /* 1mm under the 264mm sheet: sitting exactly on the height let rounding
+       tip a page over the edge, and every spill costs a near-empty sheet. */
+    min-height: 263mm;
+    margin: 8mm auto;
+    padding: 16mm 13mm 12mm;
+    background: var(--cream);
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .page-cover {
+    background: var(--navy);
+    color: #fff;
+    justify-content: center;
+  }
+
+  .eyebrow {
+    color: var(--orange);
+    font-size: 8.5pt;
+    font-weight: 700;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    position: absolute;
+    top: 16mm;
+    left: 13mm;
+  }
+
+  h1 {
+    font-size: 30pt;
+    line-height: 1.1;
+    margin: 0 0 6mm;
+    letter-spacing: -.01em;
+  }
+
+  .lede {
+    font-size: 11pt;
+    line-height: 1.5;
+    color: #c8d2ea;
+    margin: 0 0 9mm;
+  }
+
+  .toc { list-style: none; margin: 0; padding: 0; }
+  .toc li {
+    display: flex;
+    gap: 4mm;
+    font-size: 10.5pt;
+    padding: 1.4mm 0;
+  }
+  .toc .n { color: var(--orange); font-weight: 700; min-width: 4mm; }
+
+  .cover-foot {
+    position: absolute;
+    bottom: 16mm;
+    left: 13mm;
+    right: 13mm;
+    border-top: 1px solid rgba(255,255,255,.22);
+    padding-top: 4mm;
+    color: #9fb0d4;
+    font-size: 9.5pt;
+  }
+
+  .sec {
+    display: flex;
+    align-items: center;
+    gap: 4mm;
+    margin: 0 0 3mm;
+  }
+  .sec + .sec { margin-top: 6mm; }
+  .badge {
+    flex: none;
+    width: 9mm;
+    height: 9mm;
+    border-radius: 50%;
+    background: var(--orange);
+    color: #fff;
+    font-size: 12pt;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .sec h2 {
+    font-size: 16pt;
+    color: var(--navy);
+    margin: 0;
+    line-height: 1.15;
+  }
+  .sec .sub {
+    font-size: 9.5pt;
+    color: var(--muted);
+    font-weight: 400;
+    display: block;
+    margin-top: .5mm;
+  }
+
+  p { font-size: 10.5pt; line-height: 1.5; margin: 0 0 3mm; }
+  strong { color: var(--navy); }
+
+  .urlbox {
+    border: 1px solid var(--rule);
+    border-radius: 2mm;
+    padding: 4mm;
+    background: #fff;
+    font-size: 9.5pt;
+    color: var(--navy);
+    font-weight: 600;
+    margin-bottom: 5mm;
+    word-break: break-all;
+  }
+
+  ul.dots { list-style: none; margin: 0 0 4mm; padding: 0; }
+  ul.dots li {
+    display: flex;
+    gap: 3.5mm;
+    font-size: 10.5pt;
+    line-height: 1.45;
+    margin-bottom: 2.2mm;
+  }
+  ul.dots li::before {
+    content: "";
+    flex: none;
+    width: 2mm;
+    height: 2mm;
+    border-radius: 50%;
+    background: var(--orange);
+    margin-top: 2mm;
+  }
+
+  ol.steps { list-style: none; margin: 0 0 4mm; padding: 0; counter-reset: s; }
+  ol.steps li {
+    display: flex;
+    gap: 3.5mm;
+    font-size: 10.5pt;
+    line-height: 1.45;
+    margin-bottom: 2.2mm;
+    counter-increment: s;
+  }
+  ol.steps li::before {
+    content: counter(s);
+    flex: none;
+    width: 5.5mm;
+    height: 5.5mm;
+    border-radius: 50%;
+    background: #fdeccc;
+    color: #b06c00;
+    font-size: 8.5pt;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: .6mm;
+  }
+
+  .note {
+    border-left: 3px solid var(--orange);
+    background: #fdf3e0;
+    padding: 3.2mm 5mm;
+    font-size: 10pt;
+    line-height: 1.45;
+    margin: 0 0 4mm;
+  }
+  .warn {
+    border-left: 3px solid var(--red);
+    background: #fdeaec;
+    padding: 3.2mm 5mm;
+    font-size: 10pt;
+    line-height: 1.45;
+    margin: 0 0 4mm;
+  }
+  .note strong, .warn strong { color: var(--navy); }
+
+  .mock {
+    border: 1px solid var(--rule);
+    border-radius: 2.5mm;
+    background: #fff;
+    padding: 5mm;
+    margin: 0 0 5mm;
+  }
+  .mock-label {
+    font-size: 7.5pt;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 4mm;
+  }
+
+  .phones {
+    display: flex;
+    gap: 4mm;
+    margin: 0 0 5mm;
+  }
+  .phone-col { flex: 1; }
+  .phone-cap {
+    font-size: 8.5pt;
+    color: var(--navy);
+    font-weight: 700;
+    text-align: center;
+    margin-bottom: 2mm;
+  }
+  .phone-cap span { display: block; font-weight: 400; color: var(--muted); font-size: 8pt; }
+  svg { display: block; width: 100%; height: auto; }
+
+  table.faq { width: 100%; border-collapse: collapse; }
+  table.faq th {
+    text-align: left;
+    font-size: 10.5pt;
+    color: var(--navy);
+    padding: 2.6mm 0 1.2mm;
+    border-bottom: 1px solid var(--rule);
+  }
+  table.faq td {
+    font-size: 10pt;
+    line-height: 1.5;
+    padding: 1.4mm 0 2.2mm;
+    border-bottom: 2px solid #f1ede3;
+    color: #3a4460;
+  }
+
+  .summary {
+    background: var(--navy);
+    color: #fff;
+    border-radius: 2.5mm;
+    padding: 5mm;
+    margin-top: auto;
+  }
+  .summary h3 {
+    color: var(--orange);
+    font-size: 13pt;
+    margin: 0 0 2.5mm;
+  }
+  .summary p { font-size: 10pt; line-height: 1.6; margin: 0; color: #dbe3f4; }
+  .summary strong { color: #fff; }
+
+  .foot {
+    margin-top: auto;
+    padding-top: 5mm;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    justify-content: space-between;
+    font-size: 8.5pt;
+    color: var(--muted);
+  }
+
+  .cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1.5mm; }
+  .cal .dow { font-size: 7pt; color: var(--muted); text-align: center; letter-spacing: .08em; padding-bottom: 1mm; }
+  .cal .d {
+    border-radius: 1.5mm;
+    padding: 2mm .5mm;
+    text-align: center;
+    font-size: 9pt;
+    font-weight: 700;
+    background: #f4f4f5;
+    color: #c9cbd1;
+  }
+  .cal .d small { display: block; font-size: 6pt; font-weight: 400; margin-top: .4mm; }
+  .cal .yes { background: #e6f6ec; border: 1px solid #a8dcbb; color: #17693a; }
+  .cal .no  { background: #fdeaec; border: 1px solid #f1a9b3; color: var(--red); }
+  .btn-mock {
+    display: inline-block;
+    background: var(--orange);
+    color: #fff;
+    font-size: 9pt;
+    font-weight: 700;
+    padding: 2.5mm 5mm;
+    border-radius: 1.5mm;
+    margin-top: 4mm;
+  }
+
+  .shift {
+    border-left: 3px solid var(--orange);
+    background: #fdf1e3;
+    border-radius: 0 1.5mm 1.5mm 0;
+    padding: 3mm 4mm;
+    margin-bottom: 2.5mm;
+    display: flex;
+    align-items: baseline;
+    gap: 3mm;
+    font-size: 9.5pt;
+  }
+  .shift b { color: var(--navy); }
+  .shift .st { color: var(--orange); font-weight: 700; }
+  .shift .tm { margin-left: auto; color: var(--muted); font-size: 9pt; }
+
+  @page { size: 148mm 264mm; margin: 0; }
+  @media print {
+    body { background: #fff; }
+    .page { margin: 0; box-shadow: none; page-break-after: always; }
+    .page:last-child { page-break-after: auto; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══ COVER ══ -->
+<section class="page page-cover">
+  <div class="eyebrow">Zábavný park Fantázia</div>
+  <h1>Ako funguje plánovač zmien</h1>
+  <p class="lede">Krátky návod pre brigádnikov — tvoj odkaz, appka na ploche, dostupnosť a zápis odpracovaných hodín.</p>
+  <ol class="toc">
+    <li><span class="n">1</span> Tvoj osobný odkaz</li>
+    <li><span class="n">2</span> Pridaj si appku na plochu</li>
+    <li><span class="n">3</span> Kedy nemôžeš pracovať</li>
+    <li><span class="n">4</span> Tvoj rozpis</li>
+    <li><span class="n">5</span> Zápis hodín</li>
+    <li><span class="n">6</span> Zastupoval si niekoho?</li>
+    <li><span class="n">7</span> Zmena po uzávierke</li>
+    <li><span class="n">8</span> Časté otázky</li>
+  </ol>
+  <div class="cover-foot">Otázky? Ozvi sa Cyrilovi.</div>
+</section>
+
+<!-- ══ 1 — ODKAZ ══ -->
+<section class="page">
+  <div class="sec"><div class="badge">1</div><h2>Tvoj osobný odkaz</h2></div>
+  <p>Od Cyrila si dostal odkaz, ktorý vyzerá asi takto:</p>
+  <div class="urlbox">fantazia-shift-planner.onrender.com/worker/a3f9c1…</div>
+  <ul class="dots">
+    <li><span>Je <strong>len tvoj</strong> — neposielaj ho ďalej. Kto ho má, vidí tvoje údaje.</span></li>
+    <li><span>Nemusíš si pamätať heslo — odkaz ťa pustí priamo dovnútra.</span></li>
+    <li><span>Ak ti Cyril nastavil heslo, je v tvare <strong>PriezviskoMeno</strong> — bez diakritiky a bez medzier.</span></li>
+  </ul>
+  <div class="note"><strong>Príklad hesla:</strong> Jozef Novák → <strong>NovakJozef</strong></div>
+  <div class="note">Aby si odkaz nemusel každý mesiac hľadať v správach, <strong>pridaj si ho na plochu telefónu</strong> — ako v ďalšom kroku.</div>
+  <div class="foot"><span>Fantázia — návod pre brigádnikov</span><span>1</span></div>
+</section>
+
+<!-- ══ 2 — PWA iPhone ══ -->
+<section class="page">
+  <div class="sec"><div class="badge">2</div><h2>Pridaj si appku na plochu<span class="sub">Urobíš raz, potom už len klikáš na ikonu</span></h2></div>
+  <p>Plánovač sa dá pridať na plochu telefónu ako <strong>normálna appka</strong> — s ikonou obra. Otvorí sa na celú obrazovku, bez adresného riadku, a rovno na tvojom rozpise.</p>
+
+  <div class="phone-cap" style="text-align:left;font-size:10pt;margin-bottom:3mm">iPhone (Safari)</div>
+  <div class="phones">
+    <div class="phone-col">
+      <div class="phone-cap">1<span>Otvor svoj odkaz a klikni na ikonu zdieľania dole</span></div>
+      <svg viewBox="0 0 120 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Safari s ikonou zdieľania dole">
+        <rect x="4" y="4" width="112" height="192" rx="12" fill="#fff" stroke="#c9c9cf" stroke-width="1.5"/>
+        <rect x="4" y="4" width="112" height="14" rx="12" fill="#f2f2f5"/>
+        <rect x="14" y="24" width="92" height="9" rx="4.5" fill="#ececed"/>
+        <text x="60" y="30.5" font-size="5" fill="#8b8b90" text-anchor="middle" font-family="Helvetica">fantazia-shift-planner…</text>
+        <rect x="14" y="42" width="92" height="7" rx="2" fill="#0c2372"/>
+        <text x="18" y="47.5" font-size="4.6" fill="#fff" font-family="Helvetica">Tvoj rozpis</text>
+        <rect x="14" y="54" width="92" height="16" rx="2.5" fill="#fdf1e3"/>
+        <rect x="14" y="54" width="2" height="16" fill="#f99300"/>
+        <text x="20" y="61" font-size="4.4" fill="#0c2372" font-family="Helvetica">4. 9. (Pi) Vstup</text>
+        <text x="20" y="67" font-size="4" fill="#8b8b90" font-family="Helvetica">10:00–19:00</text>
+        <rect x="14" y="74" width="92" height="16" rx="2.5" fill="#fdf1e3"/>
+        <rect x="14" y="74" width="2" height="16" fill="#f99300"/>
+        <text x="20" y="81" font-size="4.4" fill="#0c2372" font-family="Helvetica">5. 9. (So) Autodrom</text>
+        <text x="20" y="87" font-size="4" fill="#8b8b90" font-family="Helvetica">10:00–19:00</text>
+        <rect x="4" y="176" width="112" height="20" rx="0" fill="#f7f7f9"/>
+        <path d="M4 176h112" stroke="#dcdce0" stroke-width="1"/>
+        <g stroke="#0c2372" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M60 181v11"/>
+          <path d="M55.5 185.5 60 181l4.5 4.5"/>
+          <path d="M52 188v5h16v-5"/>
+        </g>
+        <circle cx="60" cy="186.5" r="12" fill="none" stroke="#da001c" stroke-width="1.6" stroke-dasharray="3 2"/>
+      </svg>
+    </div>
+    <div class="phone-col">
+      <div class="phone-cap">2<span>V ponuke zroluj nižšie a vyber „Pridať na plochu“</span></div>
+      <svg viewBox="0 0 120 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Safari ponuka zdieľania s voľbou Pridať na plochu">
+        <rect x="4" y="4" width="112" height="192" rx="12" fill="#e9e9ee" stroke="#c9c9cf" stroke-width="1.5"/>
+        <rect x="10" y="58" width="100" height="132" rx="8" fill="#f7f7fa"/>
+        <rect x="46" y="63" width="28" height="2.5" rx="1.25" fill="#c9c9cf"/>
+        <rect x="16" y="74" width="88" height="16" rx="4" fill="#fff"/>
+        <text x="22" y="84" font-size="4.6" fill="#1a1a1f" font-family="Helvetica">Kopírovať</text>
+        <rect x="16" y="94" width="88" height="16" rx="4" fill="#fff"/>
+        <text x="22" y="104" font-size="4.6" fill="#1a1a1f" font-family="Helvetica">Pridať do záložiek</text>
+        <rect x="16" y="114" width="88" height="16" rx="4" fill="#fff"/>
+        <text x="22" y="124" font-size="4.6" fill="#1a1a1f" font-family="Helvetica">Pridať do zoznamu</text>
+        <rect x="16" y="134" width="88" height="16" rx="4" fill="#fff" stroke="#da001c" stroke-width="1.4"/>
+        <text x="22" y="144" font-size="4.6" fill="#0c2372" font-family="Helvetica" font-weight="bold">Pridať na plochu</text>
+        <g stroke="#0c2372" stroke-width="1.3" fill="none" stroke-linecap="round">
+          <rect x="92" y="138" width="8" height="8" rx="1.6"/>
+          <path d="M96 140.2v3.6M94.2 142h3.6"/>
+        </g>
+        <rect x="16" y="154" width="88" height="16" rx="4" fill="#fff"/>
+        <text x="22" y="164" font-size="4.6" fill="#1a1a1f" font-family="Helvetica">Tlačiť</text>
+      </svg>
+    </div>
+    <div class="phone-col">
+      <div class="phone-cap">3<span>Potvrď „Pridať“ — ikona pristane na ploche</span></div>
+      <svg viewBox="0 0 120 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Plocha telefónu s novou ikonou appky">
+        <rect x="4" y="4" width="112" height="192" rx="12" fill="#2b3a63" stroke="#c9c9cf" stroke-width="1.5"/>
+        <rect x="4" y="4" width="112" height="192" rx="12" fill="url(#wall)"/>
+        <defs>
+          <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#33477a"/>
+            <stop offset="1" stop-color="#1d2947"/>
+          </linearGradient>
+        </defs>
+        <g>
+          <rect x="18" y="40" width="24" height="24" rx="6" fill="#ffffff" opacity=".18"/>
+          <rect x="50" y="40" width="24" height="24" rx="6" fill="#ffffff" opacity=".18"/>
+          <rect x="82" y="40" width="24" height="24" rx="6" fill="#ffffff" opacity=".18"/>
+          <rect x="18" y="76" width="24" height="24" rx="6" fill="#ffffff" opacity=".18"/>
+        </g>
+        <g>
+          <rect x="48" y="74" width="28" height="28" rx="7" fill="#fff"/>
+          <!-- mascot: red folk hat, yellow face, navy + red vest -->
+          <path d="M53 84c1-5 5.5-8.5 11-8.5S74 79 75 84c-3.5-1.6-7-2.4-11-2.4s-7.5.8-11 2.4z" fill="#e8362f"/>
+          <ellipse cx="62" cy="83.6" rx="12" ry="1.5" fill="#e8362f"/>
+          <circle cx="62" cy="89" r="5.4" fill="#f9b53f"/>
+          <circle cx="60.1" cy="88.4" r=".85" fill="#2f3d86"/>
+          <circle cx="63.9" cy="88.4" r=".85" fill="#2f3d86"/>
+          <path d="M60.4 90.8c1 .9 2.2.9 3.2 0" stroke="#2f3d86" stroke-width=".7" fill="none" stroke-linecap="round"/>
+          <path d="M55.4 101.5c.5-4 3.1-6.8 6.6-6.8s6.1 2.8 6.6 6.8z" fill="#2f3d86"/>
+          <path d="M59.9 101.5c.2-2.8 1-4.9 2.1-6 1.1 1.1 1.9 3.2 2.1 6z" fill="#e8362f"/>
+          <text x="62" y="109" font-size="4.6" fill="#fff" text-anchor="middle" font-family="Helvetica">Fantázia</text>
+        </g>
+        <circle cx="62" cy="88" r="18.5" fill="none" stroke="#f99300" stroke-width="1.6" stroke-dasharray="3 2"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="note"><strong>Android (Chrome):</strong> appka sa väčšinou ohlási sama — dole vyskočí pruh <strong>„Nainštalovať aplikáciu“</strong>. Ak nie, klikni na tri bodky vpravo hore a vyber <strong>„Pridať na plochu“</strong> alebo <strong>„Nainštalovať aplikáciu“</strong>.</div>
+
+  <div class="mock" style="margin-top:2mm">
+    <div class="mock-label">Čo tým získaš</div>
+    <ul class="dots" style="margin-bottom:0">
+      <li><span>Nemusíš hľadať odkaz v starých správach — appku otvoríš jedným klikom.</span></li>
+      <li><span>Otvorí sa <strong>na celú obrazovku</strong>, bez adresného riadku.</span></li>
+      <li><span>Keď nemáš signál, ukáže ti <strong>posledný rozpis</strong> namiesto prázdnej stránky.</span></li>
+    </ul>
+  </div>
+
+  <div class="note" style="margin-bottom:0">Nič sa nesťahuje z App Store ani Google Play — je to len ikona na plochu. Aktualizuje sa sama.</div>
+  <div class="foot"><span>Fantázia — návod pre brigádnikov</span><span>2</span></div>
+</section>
+
+<!-- ══ 3 — DOSTUPNOSŤ ══ -->
+<section class="page">
+  <div class="sec"><div class="badge">3</div><h2>Kedy nemôžeš pracovať</h2></div>
+  <p>Každý mesiac vyplníš, ktoré dni <strong>nemôžeš</strong> prísť.</p>
+  <ol class="steps">
+    <li><span>Otvor appku (alebo svoj odkaz) — uvidíš kalendár</span></li>
+    <li><span>Klikni na dni, kedy <strong>nemôžeš</strong> → sfarbia sa načerveno</span></li>
+    <li><span>Zelené dni necháš tak = môžeš pracovať</span></li>
+    <li><span>Klikni <strong>Odoslať dostupnosť</strong></span></li>
+  </ol>
+
+  <div class="mock">
+    <div class="mock-label">Takto to vyzerá v appke</div>
+    <div class="cal">
+      <div class="dow">PO</div><div class="dow">UT</div><div class="dow">ST</div><div class="dow">ŠV</div><div class="dow">PI</div><div class="dow">SO</div><div class="dow">NE</div>
+      <div class="d">1</div>
+      <div class="d yes">2<small>Môžem</small></div>
+      <div class="d no">3<small>Nemôžem</small></div>
+      <div class="d yes">4<small>Môžem</small></div>
+      <div class="d">5</div><div class="d">6</div><div class="d">7</div>
+      <div class="d">8</div>
+      <div class="d yes">9<small>Môžem</small></div>
+      <div class="d no">10<small>Nemôžem</small></div>
+      <div class="d yes">11<small>Môžem</small></div>
+      <div class="d">12</div><div class="d">13</div><div class="d">14</div>
+    </div>
+    <span class="btn-mock">Odoslať dostupnosť</span>
+  </div>
+
+  <div class="warn"><strong>Uzávierka: 15. deň predchádzajúceho mesiaca.</strong><br>Dostupnosť na október odovzdáš do 15. septembra. Potom sa kalendár zamkne.</div>
+
+  <div class="sec"><div class="badge">4</div><h2>Tvoj rozpis</h2></div>
+  <p>Keď je rozpis hotový a zverejnený, v sekcii <strong>Tvoj rozpis</strong> uvidíš všetky svoje zmeny — dátum, stanovisko a čas.</p>
+  <div class="mock">
+    <div class="mock-label">Tvoj rozpis</div>
+    <div class="shift"><b>4. 9. (Pi)</b> <span class="st">Vstup</span> <span class="tm">10:00–19:00</span></div>
+    <div class="shift"><b>5. 9. (So)</b> <span class="st">Autodrom</span> <span class="tm">10:00–19:00</span></div>
+  </div>
+  <div class="foot"><span>Fantázia — návod pre brigádnikov</span><span>3</span></div>
+</section>
+
+<!-- ══ 5 — HODINY ══ -->
+<section class="page">
+  <div class="sec"><div class="badge">5</div><h2>Zápis hodín</h2></div>
+  <p>Po každej odpracovanej zmene si zapíšeš <strong>skutočný čas</strong>, kedy si prišiel a odišiel.</p>
+  <div class="warn"><strong>Dôležité: len v ten istý deň.</strong><br>Na druhý deň sa zmena už zapísať nedá.</div>
+  <ol class="steps">
+    <li><span>V deň zmeny otvor appku</span></li>
+    <li><span>Pri dnešnej zmene sa objavia dve políčka <strong>od – do</strong></span></li>
+    <li><span>Uprav ich na skutočný čas (predvyplnené sú plánované hodiny)</span></li>
+    <li><span>Klikni <strong>Zapísať hodiny</strong></span></li>
+  </ol>
+  <div class="mock">
+    <div class="mock-label">V deň zmeny</div>
+    <div class="shift" style="flex-wrap:wrap">
+      <b>24. 8. (Po)</b> <span class="st">Vstup</span> <span class="tm">10:00–19:00</span>
+      <div style="display:flex;gap:2mm;align-items:center;width:100%;margin-top:3mm">
+        <span style="background:#fff;border:1px solid #e6e2d8;border-radius:1.5mm;padding:1.5mm 3mm;font-size:9pt;font-weight:700;color:var(--navy)">10:00</span>
+        <span style="color:var(--muted)">–</span>
+        <span style="background:#fff;border:1px solid #e6e2d8;border-radius:1.5mm;padding:1.5mm 3mm;font-size:9pt;font-weight:700;color:var(--navy)">19:15</span>
+        <span style="background:#eef0f5;border-radius:1.5mm;padding:1.5mm 4mm;font-size:9pt;color:var(--navy);font-weight:700">Zapísať hodiny</span>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span>Fantázia — návod pre brigádnikov</span><span>4</span></div>
+</section>
+
+<!-- ══ 5 pokračovanie — po odoslaní ══ -->
+<section class="page">
+  <p>Po odoslaní sa zápis <strong>zamkne</strong> a uvidíš, že čaká na schválenie. Prevádzkar hodiny skontroluje a schváli.</p>
+  <div class="mock">
+    <div class="mock-label">Po odoslaní</div>
+    <div class="shift" style="flex-wrap:wrap">
+      <b>24. 8. (Po)</b> <span class="st">Vstup</span> <span class="tm">10:00–19:00</span>
+      <div style="width:100%;margin-top:2.5mm;display:flex;gap:3mm;align-items:center;flex-wrap:wrap">
+        <span style="background:#fdf3e0;border-radius:1.5mm;padding:1.2mm 3mm;font-size:8.5pt;color:#8a6200;font-weight:700">⏳ Čaká na schválenie</span>
+        <span style="font-size:8.5pt;color:var(--muted)">Nahlásil(a) si 10:00–19:15</span>
+      </div>
+    </div>
+  </div>
+  <ul class="dots">
+    <li><span><strong>Pomýlil si sa?</strong> Klikni <strong>Poslať opravu</strong> a zadaj správny čas. Oprava ide znova na schválenie.</span></li>
+    <li><span><strong>Zabudol si zapísať?</strong> Objaví sa červené <strong>Hodiny neboli zapísané</strong> — ozvi sa prevádzkarovi.</span></li>
+  </ul>
+  <div class="note">Prevádzkar zadáva hodiny <strong>nezávisle</strong> od teba — preto si ich vždy zapíš poctivo a hneď po zmene.</div>
+  <div class="foot"><span>Fantázia — návod pre brigádnikov</span><span>5</span></div>
+</section>
+
+<!-- ══ 6 + 7 ══ -->
+<section class="page">
+  <div class="sec"><div class="badge">6</div><h2>Zastupoval si niekoho?</h2></div>
+  <p>Ak si pracoval <strong>namiesto iného brigádnika</strong> na jeho zmene, zapíšeš si to sám.</p>
+  <ol class="steps">
+    <li><span>V deň zmeny otvor appku</span></li>
+    <li><span>Dole nájdi <strong>Zastúpil(a) si niekoho dnes?</strong></span></li>
+    <li><span>Vyber stanovisko a <strong>za koho</strong> si zastupoval</span></li>
+    <li><span>Zadaj čas a klikni <strong>Zapísať zástup</strong></span></li>
+  </ol>
+  <div class="note">Platí to isté pravidlo — <strong>zapíš to v ten istý deň.</strong> Ten, koho zastupuješ, musí byť v ten deň v rozpise.</div>
+
+  <div class="sec"><div class="badge">7</div><h2>Zmena po uzávierke</h2></div>
+  <p>Keď je dostupnosť už zamknutá a niečo sa ti zmenilo:</p>
+  <ol class="steps">
+    <li><span>V appke nájdi <strong>Žiadosť o zmenu dostupnosti</strong></span></li>
+    <li><span>Napíš dôvod a dni, ktorých sa to týka</span></li>
+    <li><span>Odošli — Cyril žiadosť schváli alebo zamietne</span></li>
+  </ol>
+  <div class="warn">Ak nemôžeš prísť na zmenu, ktorá je <strong>už zajtra</strong>, nestačí žiadosť v appke — <strong>zavolaj Cyrilovi.</strong></div>
+  <div class="foot"><span>Fantázia — návod pre brigádnikov</span><span>6</span></div>
+</section>
+
+<!-- ══ 8 — FAQ ══ -->
+<section class="page">
+  <div class="sec"><div class="badge">8</div><h2>Časté otázky</h2></div>
+  <table class="faq">
+    <tr><th>Stratil som svoj odkaz.</th></tr>
+    <tr><td>Napíš Cyrilovi, pošle ti ho znova. Ak máš appku na ploche, odkaz už nepotrebuješ.</td></tr>
+    <tr><th>Musím appku inštalovať?</th></tr>
+    <tr><td>Nemusíš — stačí ti tvoj odkaz v prehliadači. Ale ak si ju pridáš na plochu, máš ju vždy po ruke ako ikonu a otvorí sa na celú obrazovku.</td></tr>
+    <tr><th>Je to appka z App Store?</th></tr>
+    <tr><td>Nie. Nič sa nesťahuje z obchodu — pridá sa ti len ikona na plochu. Zaberie skoro nič a aktualizuje sa sama.</td></tr>
+    <tr><th>Nefunguje mi heslo.</th></tr>
+    <tr><td>Píše sa bez diakritiky a bez medzier — napr. <strong>NovakJozef</strong>. Ak to stále nejde, ozvi sa Cyrilovi.</td></tr>
+    <tr><th>Zabudol som zapísať hodiny.</th></tr>
+    <tr><td>Kontaktuj prevádzkara — zapíše ich za teba.</td></tr>
+    <tr><th>Nemôžem prísť na zmenu.</th></tr>
+    <tr><td>Ozvi sa čo najskôr Cyrilovi. Nestačí to napísať len v appke.</td></tr>
+    <tr><th>Vidím iný mesiac, ako čakám.</th></tr>
+    <tr><td>Rozpis a dostupnosť môžu bežať súbežne. Hore pri každej sekcii vždy vidíš, o ktorý mesiac ide.</td></tr>
+    <tr><th>Nemám signál — appka je prázdna.</th></tr>
+    <tr><td>Appka ti ukáže posledný rozpis, ktorý stiahla. Nové zmeny sa dotiahnu, keď budeš mať internet.</td></tr>
+  </table>
+
+  <div class="summary">
+    <h3>Zhrnutie v troch bodoch</h3>
+    <p><strong>1.</strong> Dostupnosť odovzdaj <strong>do 15.</strong> predchádzajúceho mesiaca.<br>
+       <strong>2.</strong> Hodiny si zapíš <strong>v deň zmeny</strong>, inak už nie.<br>
+       <strong>3.</strong> Odkaz je len tvoj — <strong>neposielaj ho ďalej.</strong></p>
+  </div>
+  <div class="foot"><span>Fantázia — návod pre brigádnikov</span><span>7</span></div>
+</section>
+
+</body>
+</html>
