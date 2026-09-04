@@ -699,6 +699,75 @@
     return schedCard + freeCard + hoursCard;
   }
 
+  // The operator's own hours. Nobody approves these, so the form is plain and
+  // the entry shows the figure back — there is no second party to keep it from.
+  function buildOperatorOwnHours() {
+    const d = S.data;
+    const today = d.today || localTodayISO();
+    const mine = d.myHourLogs || [];
+    const todayEntry = mine.find(m => m.date === today);
+    const total = mine.reduce((s, m) => s + (m.hours || 0), 0);
+
+    const rows = mine.length
+      ? `<table class="stack-titled">
+          <thead><tr><th>Dátum</th><th>Od–do</th><th>Hodín</th></tr></thead>
+          <tbody>${mine.map(m => `<tr>
+            <td>${fmtShort(m.date)}</td>
+            <td>${esc(m.start)}–${esc(m.end)}</td>
+            <td><strong>${(m.hours || 0).toFixed(1)} h</strong></td>
+          </tr>`).join('')}</tbody>
+        </table>
+        <p class="text-muted" style="margin-top:8px;font-size:.84rem">Spolu <strong>${total.toFixed(1)} h</strong></p>`
+      : '<p class="text-muted">Zatiaľ si nič nezapísal.</p>';
+
+    return `
+      <div class="card">
+        <div class="section-title">Moje hodiny</div>
+        <p class="text-muted" style="margin-bottom:12px;font-size:.84rem">
+          Tvoje vlastné odpracované hodiny — nie sú viazané na stanovisko a nikto ich neschvaľuje.
+          Zapísať sa dajú v ten istý deň, do polnoci.
+        </p>
+        <div class="form-row" style="align-items:flex-end">
+          <div class="form-group" style="max-width:130px">
+            <label>Od</label>
+            ${timeInputHTML('my-hrs-start', '', todayEntry?.start || d.defaultOpensAt || '10:00', 'width:110px')}
+          </div>
+          <div class="form-group" style="max-width:130px">
+            <label>Do</label>
+            ${timeInputHTML('my-hrs-end', '', todayEntry?.end || d.defaultClosesAt || '19:00', 'width:110px')}
+          </div>
+          <div class="form-group" style="flex:none">
+            <button class="btn btn-primary" id="my-hrs-save">${todayEntry ? 'Upraviť dnešný zápis' : 'Zapísať hodiny'}</button>
+          </div>
+        </div>
+        <div id="my-hrs-msg" style="margin-bottom:10px"></div>
+        ${todayEntry
+          ? `<div class="alert alert-success" style="margin-bottom:12px">✓ Dnes máš zapísané ${esc(todayEntry.start)}–${esc(todayEntry.end)} (${(todayEntry.hours||0).toFixed(1)} h). Dá sa to prepísať do polnoci.</div>`
+          : ''}
+        ${rows}
+      </div>`;
+  }
+
+  function attachOperatorOwnHours() {
+    document.getElementById('my-hrs-save')?.addEventListener('click', async () => {
+      const btn = document.getElementById('my-hrs-save');
+      const start = document.querySelector('.my-hrs-start')?.value;
+      const end = document.querySelector('.my-hrs-end')?.value;
+      btn.disabled = true;
+      try {
+        const r = await api('POST', `/api/operator/${S.token}/my-hours`, {
+          date: S.data.today || localTodayISO(), start, end,
+        });
+        S.data.myHourLogs = r.myHourLogs;
+        S.opTab = 'hodiny';
+        renderOperatorMain();
+      } catch (e) {
+        setMsg('my-hrs-msg', `<div class="alert alert-error">${esc(e.message)}</div>`);
+        btn.disabled = false;
+      }
+    });
+  }
+
   function buildOperatorHours() {
     const d = S.data;
     const logs = [...(d.hourLogs || [])].sort((a, b) => {
@@ -706,18 +775,18 @@
       return a.date.localeCompare(b.date);
     });
 
-    if (!logs.length) {
-      return `<div class="card"><p class="text-muted">Zatiaľ nikto nenahlásil odpracované hodiny.</p></div>`;
-    }
+    const approvals = !logs.length
+      ? `<div class="card"><p class="text-muted">Zatiaľ nikto nenahlásil odpracované hodiny.</p></div>`
+      : `<div class="card">
+          <div class="section-title">Hodiny brigádnikov na schválenie</div>
+          <p class="text-muted" style="margin-bottom:12px;font-size:.84rem">${OP_HOURS_NOTE}</p>
+          <div id="op-hrs-msg"></div>
+          <div style="overflow-x:auto">
+            <table class="stack-titled">${OP_HOURS_TABLE_HEAD}<tbody>${operatorHourRows(logs)}</tbody></table>
+          </div>
+        </div>`;
 
-    return `
-      <div class="card">
-        <p class="text-muted" style="margin-bottom:12px;font-size:.84rem">${OP_HOURS_NOTE}</p>
-        <div id="op-hrs-msg"></div>
-        <div style="overflow-x:auto">
-          <table class="stack-titled">${OP_HOURS_TABLE_HEAD}<tbody>${operatorHourRows(logs)}</tbody></table>
-        </div>
-      </div>`;
+    return buildOperatorOwnHours() + approvals;
   }
 
   function attachOperatorHours() {
@@ -783,6 +852,7 @@
     });
 
     if (S.opTab === 'hodiny' || S.opTab === 'dnes') attachOperatorHours();
+    if (S.opTab === 'hodiny') attachOperatorOwnHours();
   }
 
   // ─── ADMIN VIEW ───────────────────────────────────────────────────────────
@@ -2030,10 +2100,16 @@
     const detailRows = [...logs]
       .sort((a, b) => b.date.localeCompare(a.date))
       .map(h => {
-        const stn = esc(stationMap.get(h.stationId) || h.stationId);
-        const who = h.substituteFor
-          ? `${esc(h.workerName)} <span class="text-muted" style="font-size:.76rem">(za ${esc(h.substituteForName||'?')})</span>`
-          : esc(h.workerName);
+        // An operator's own hours sit on no station and nobody approved them.
+        const isOp = h.personType === 'operator';
+        const stn = isOp
+          ? '<span class="text-muted">celá prevádzka</span>'
+          : esc(stationMap.get(h.stationId) || h.stationId);
+        const who = isOp
+          ? `${esc(h.workerName)} <span class="badge badge-info" style="font-size:.68rem">prevádzkar</span>`
+          : (h.substituteFor
+            ? `${esc(h.workerName)} <span class="text-muted" style="font-size:.76rem">(za ${esc(h.substituteForName||'?')})</span>`
+            : esc(h.workerName));
         const delBtn = `<button class="btn btn-danger btn-sm del-hour" data-id="${esc(h.id)}"
           data-who="${esc(h.workerName)}" data-date="${fmtShort(h.date)}" title="Zmazať záznam">×</button>`;
         if (h.status !== 'approved') {
@@ -2050,9 +2126,11 @@
           <td>${fmtShort(h.date)}</td><td>${stn}</td><td>${who}</td>
           <td>${esc(h.reportedStart)}–${esc(h.reportedEnd)}</td>
           <td>${esc(h.approvedStart)}–${esc(h.approvedEnd)}</td>
-          <td>${mismatch
-            ? `<span class="badge badge-danger">⚠ Nezhoda ${diffH > 0 ? '+' : ''}${diffH.toFixed(1)} h</span>`
-            : '<span class="badge badge-success">✓ Zhoda</span>'}</td>
+          <td>${isOp
+            ? '<span class="text-muted" style="font-size:.78rem">bez schvaľovania</span>'
+            : (mismatch
+              ? `<span class="badge badge-danger">⚠ Nezhoda ${diffH > 0 ? '+' : ''}${diffH.toFixed(1)} h</span>`
+              : '<span class="badge badge-success">✓ Zhoda</span>')}</td>
           <td class="text-muted" style="font-size:.8rem">${esc(h.approvedByName || '')}</td>
           <td>${delBtn}</td>
         </tr>`;

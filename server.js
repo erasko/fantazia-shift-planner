@@ -285,8 +285,18 @@ function isAvailabilityLocked(store) {
   return new Date() > new Date(store.availabilityDeadline);
 }
 
+// Today in the park's own timezone, not UTC. Hour logging is allowed "on the
+// day of the shift, until midnight", and the client decides what to show from
+// the browser's local date — so a UTC date here would disagree with both for
+// the two hours after local midnight.
+const PARK_TZ = process.env.PARK_TZ || 'Europe/Bratislava';
+
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: PARK_TZ }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10); // unknown zone: better than crashing
+  }
 }
 
 function hhmmToMinutes(hhmm) {
@@ -343,6 +353,24 @@ function hoursBetween(start, end) {
   return mins > 0 ? mins / 60 : 0;
 }
 
+// An operator's own hours. Nobody approves these — there is no second party to
+// approve them — so reported and approved are the same figure and the entry is
+// final on submission. Unlike a worker's, they are theirs to see: the blind
+// split exists to stop a worker and an operator agreeing on a number between
+// themselves, and here there is only one person.
+function operatorOwnHourLogs(store, operatorId) {
+  return (store.hourLogs || [])
+    .filter((h) => h.personType === 'operator' && h.workerId === operatorId)
+    .map((h) => ({
+      id: h.id,
+      date: h.date,
+      start: h.reportedStart,
+      end: h.reportedEnd,
+      hours: hoursBetween(h.reportedStart, h.reportedEnd),
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
 // Hour logs shown to an operator must never reveal what the worker reported —
 // only the operator's own independently-entered time counts, so discrepancies
 // (visible only in the admin export) can't be colluded around. Strip the
@@ -350,7 +378,9 @@ function hoursBetween(start, end) {
 // so the approval form isn't pre-filled with the worker's claim.
 function sanitizeHourLogsForOperator(store) {
   const stationMap = new Map(store.stations.map((s) => [s.id, s]));
-  return (store.hourLogs || []).map((h) => {
+  // An operator's own hours are not theirs to approve, so they stay out of the
+  // approval list entirely — they come back separately, in full.
+  return (store.hourLogs || []).filter((h) => h.personType !== 'operator').map((h) => {
     const station = stationMap.get(h.stationId);
     const ds = store.daySettings?.[h.date] || {};
     const { opensAt: plannedStart, closesAt: plannedEnd } = stationTimes(store, h.date, station);
@@ -378,7 +408,7 @@ function sanitizeHourLogsForOperator(store) {
 // reports around it. They only see their own reported value and the status.
 function sanitizeHourLogsForWorker(store, workerId) {
   return (store.hourLogs || [])
-    .filter((h) => h.workerId === workerId)
+    .filter((h) => h.personType !== 'operator' && h.workerId === workerId)
     .map((h) => ({
       id: h.id,
       date: h.date,
@@ -784,17 +814,26 @@ async function exportActualHoursXLSX(store) {
   ws.getRow(1).font = { bold: true };
   ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6B35' } };
 
-  for (const w of store.workers) {
+  // Operators log their own hours too and are paid for them, so the monthly
+  // sheet has to cover both — it used to walk store.workers alone, which meant
+  // an operator's hours were recorded and then absent from payroll.
+  const people = [
+    ...store.workers.map((w) => ({ id: w.id, name: w.name, operator: false })),
+    ...(store.operators || []).map((o) => ({ id: o.id, name: `${o.name} (prevádzkar)`, operator: true })),
+  ];
+
+  for (const person of people) {
     const byDay = new Map();
     let total = 0;
     for (const log of approvedLogs) {
-      if (log.workerId !== w.id) continue;
+      if (log.workerId !== person.id) continue;
+      if ((log.personType === 'operator') !== person.operator) continue;
       const h = hoursBetween(log.approvedStart, log.approvedEnd);
       byDay.set(log.date, (byDay.get(log.date) || 0) + h);
       total += h;
     }
     if (total === 0) continue;
-    const row = [w.name, ...sortedDays.map((d) => (byDay.has(d) ? Number(byDay.get(d).toFixed(1)) : '')), Number(total.toFixed(1))];
+    const row = [person.name, ...sortedDays.map((d) => (byDay.has(d) ? Number(byDay.get(d).toFixed(1)) : '')), Number(total.toFixed(1))];
     ws.addRow(row);
   }
   ws.columns.forEach((col, i) => { col.width = i === 0 ? 22 : 8; });
@@ -1356,7 +1395,63 @@ async function handleRequest(req, res) {
       schedule: operatorScheduleView(store),
       freeWorkers: operatorFreeWorkers(store),
       hourLogs: sanitizeHourLogsForOperator(store),
+      myHourLogs: operatorOwnHourLogs(store, op.id),
+      today: todayISO(),
     });
+  }
+
+  // Operator — log their own hours. Not tied to a station: an operator runs the
+  // place rather than standing at one. Same-day only, like a worker's, but for
+  // the whole day: there is nobody to ask for a correction afterwards, so the
+  // window runs to local midnight rather than ending with the shift.
+  const opHoursM = p.match(/^\/api\/operator\/([a-zA-Z0-9]+)\/my-hours$/);
+  if (opHoursM && req.method === 'POST') {
+    const store = await getStore();
+    const op = (store.operators || []).find((o) => o.token === opHoursM[1]);
+    if (!op) return respond(res, 404, { error: 'Odkaz neexistuje' });
+
+    const body = await parseBody(req);
+    const { date, start, end } = body;
+    if (!date || !start || !end) return respond(res, 400, { error: 'Chýbajú údaje' });
+    if (date !== todayISO()) {
+      return respond(res, 400, { error: 'Hodiny si môžeš zapísať len v ten istý deň.' });
+    }
+    if (hhmmToMinutes(end) <= hhmmToMinutes(start)) {
+      return respond(res, 400, { error: 'Koniec musí byť po začiatku' });
+    }
+
+    await mutateStore((s) => {
+      if (!s.hourLogs) s.hourLogs = [];
+      const existing = (s.hourLogs || []).find(
+        (h) => h.personType === 'operator' && h.workerId === op.id && h.date === date
+      );
+      const entry = {
+        id: existing ? existing.id : generateToken(),
+        personType: 'operator',
+        date,
+        stationId: null,
+        workerId: op.id,
+        workerName: op.name,
+        substituteFor: null,
+        substituteForName: null,
+        // No second party, so the two figures are one and the same.
+        reportedStart: start,
+        reportedEnd: end,
+        reportedAt: new Date().toISOString(),
+        status: 'approved',
+        approvedStart: start,
+        approvedEnd: end,
+        approvedBy: op.id,
+        approvedByName: op.name,
+        approvedAt: new Date().toISOString(),
+      };
+      const idx = s.hourLogs.findIndex((h) => h.id === entry.id);
+      if (idx >= 0) s.hourLogs[idx] = entry;
+      else s.hourLogs.push(entry);
+    });
+
+    const fresh = await getStore();
+    return respond(res, 200, { ok: true, myHourLogs: operatorOwnHourLogs(fresh, op.id) });
   }
 
   // Operator — access
