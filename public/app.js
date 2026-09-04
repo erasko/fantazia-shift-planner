@@ -913,6 +913,51 @@
   }
 
   // ─── SETTINGS TAB ─────────────────────────────────────────────────────────
+  // Same rule as the server's stationTimes(): a pinned time wins, otherwise
+  // the day's hours shifted by the offset.
+  function resolveStationTimes(st, dayOpen, dayClose) {
+    const shift = (hhmm, off) => {
+      const [h, m] = String(hhmm || '10:00').split(':').map(Number);
+      const t = Math.max(0, Math.min(24 * 60 - 1, (h || 0) * 60 + (m || 0) + (Number(off) || 0)));
+      return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+    };
+    return {
+      opensAt: st.opensAt || shift(dayOpen, st.offsetStart),
+      closesAt: st.closesAt || shift(dayClose, st.offsetEnd),
+    };
+  }
+
+  // The park opens at different times on different days, which is exactly why
+  // a pinned time goes wrong. Show what the setting actually produces on each
+  // kind of day in this month, so it doesn't have to be worked out on paper.
+  function stationOffsetCell(st, i) {
+    const d2 = S.data;
+    const variants = new Map();
+    for (const date of [...S.openDays].sort()) {
+      const ds = S.daySettings[date] || {};
+      const o = ds.opensAt || d2.defaultOpensAt || '10:00';
+      const c = ds.closesAt || d2.defaultClosesAt || '19:00';
+      if (!variants.has(`${o}-${c}`)) variants.set(`${o}-${c}`, { o, c, date });
+    }
+    const pinned = st.opensAt || st.closesAt;
+    const preview = [...variants.values()].slice(0, 3).map(v => {
+      const r = resolveStationTimes(st, v.o, v.c);
+      return `<div>${fmtShort(v.date).replace(/^\d+\.\s*\d+\.\s*/, '')} <span class="text-muted">${esc(v.o)}–${esc(v.c)}</span> → <strong>${esc(r.opensAt)}–${esc(r.closesAt)}</strong></div>`;
+    }).join('');
+    return `<div style="display:flex;gap:4px;align-items:center">
+        <input type="number" class="st-off-start" data-i="${i}" value="${Number(st.offsetStart) || 0}"
+          step="15" min="-720" max="720" style="width:72px" title="minúty oproti otvoreniu prevádzky">
+        <span class="text-muted" style="font-size:.75rem">/</span>
+        <input type="number" class="st-off-end" data-i="${i}" value="${Number(st.offsetEnd) || 0}"
+          step="15" min="-720" max="720" style="width:72px" title="minúty oproti zatvoreniu prevádzky">
+      </div>
+      <div style="font-size:.72rem;line-height:1.5;margin-top:3px">
+        ${pinned
+          ? '<span class="text-muted">Má pevný čas — posun sa neuplatní.</span>'
+          : (preview || '<span class="text-muted">Nastav otvorené dni.</span>')}
+      </div>`;
+  }
+
   function buildSettings() {
     const d = S.data;
     const calHtml = buildCalendar(d.periodStart, d.periodEnd, [...S.openDays], [], 'open-days');
@@ -933,6 +978,7 @@
         <td><input type="number" class="st-req" data-i="${i}" value="${st.required||1}" min="1" max="20" style="width:70px"></td>
         <td>${timeInputHTML('st-open', `data-i="${i}"`, st.opensAt||'', 'width:105px')}</td>
         <td>${timeInputHTML('st-close', `data-i="${i}"`, st.closesAt||'', 'width:105px')}</td>
+        <td>${stationOffsetCell(st, i)}</td>
         <td><button class="btn btn-danger btn-sm st-rm" data-i="${i}">×</button></td>
       </tr>`).join('');
 
@@ -1033,7 +1079,7 @@
       <div class="card">
         <div class="section-title">Stanoviská</div>
         <div style="overflow-x:auto;margin-bottom:10px">
-          <table><thead><tr><th>Meno</th><th>Počet ľudí</th><th>Čas od</th><th>Čas do</th><th></th></tr></thead>
+          <table><thead><tr><th>Meno</th><th>Počet ľudí</th><th>Pevný čas od</th><th>Pevný čas do</th><th>Posun oproti prevádzke</th><th></th></tr></thead>
           <tbody id="st-body">${stRows}</tbody></table>
         </div>
         <button class="btn btn-secondary btn-sm" id="add-st">+ Pridať stanovisko</button>
@@ -1194,6 +1240,7 @@
           <td><input type="number" class="st-req" data-i="${i}" value="${st.required||1}" min="1" max="20" style="width:70px"></td>
           <td>${timeInputHTML('st-open', `data-i="${i}"`, st.opensAt||'', 'width:105px')}</td>
           <td>${timeInputHTML('st-close', `data-i="${i}"`, st.closesAt||'', 'width:105px')}</td>
+          <td>${stationOffsetCell(st, i)}</td>
           <td><button class="btn btn-danger btn-sm st-rm" data-i="${i}">×</button></td>
         </tr>`).join('');
       body.querySelectorAll('.st-rm').forEach(btn => {
@@ -1207,7 +1254,7 @@
       btn.addEventListener('click', () => { S.localStations.splice(+btn.dataset.i, 1); rebuildStations(); rebuildWorkers(); });
     });
     document.getElementById('add-st')?.addEventListener('click', () => {
-      S.localStations.push({ id: 'st_' + Date.now(), name: '', required: 1, opensAt: '', closesAt: '' });
+      S.localStations.push({ id: 'st_' + Date.now(), name: '', required: 1, opensAt: '', closesAt: '', offsetStart: 0, offsetEnd: 0 });
       rebuildStations(); rebuildWorkers();
     });
 
@@ -1323,6 +1370,8 @@
         required: Number(document.querySelector(`.st-req[data-i="${i}"]`)?.value) || 1,
         opensAt:  document.querySelector(`.st-open[data-i="${i}"]`)?.value  || '',
         closesAt: document.querySelector(`.st-close[data-i="${i}"]`)?.value || '',
+        offsetStart: Number(document.querySelector(`.st-off-start[data-i="${i}"]`)?.value) || 0,
+        offsetEnd:   Number(document.querySelector(`.st-off-end[data-i="${i}"]`)?.value)   || 0,
       })).filter(s => s.name);
 
       const workers = S.localWorkers.map((w, i) => {

@@ -289,19 +289,53 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function getShiftHours(store, date, station) {
-  const ds = store.daySettings?.[date] || {};
-  const opensAt = station?.opensAt || ds.opensAt || store.defaultOpensAt || '10:00';
-  const closesAt = station?.closesAt || ds.closesAt || store.defaultClosesAt || '19:00';
-  const [oh, om] = opensAt.split(':').map(Number);
-  const [ch, cm] = closesAt.split(':').map(Number);
-  const mins = (ch * 60 + cm) - (oh * 60 + om);
-  return mins > 0 ? mins / 60 : 0;
-}
-
 function hhmmToMinutes(hhmm) {
   const [h, m] = (hhmm || '0:00').split(':').map(Number);
   return (h || 0) * 60 + (m || 0);
+}
+
+function clampOffset(v) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n) || n === 0) return 0;
+  return Math.max(-720, Math.min(720, n));
+}
+
+function minutesToHHMM(mins) {
+  const clamped = Math.max(0, Math.min(24 * 60 - 1, Math.round(mins)));
+  const h = Math.floor(clamped / 60);
+  const m = clamped % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+// When a station works different hours from the park.
+//
+// Two ways to say it, and the difference matters. A pinned time is absolute:
+// "Bumpers closes at 18:00", true whatever the park does. An offset is
+// relative: "the entrance opens 60 minutes before the park" — and since the
+// park opens at 14:00 on Fridays and 10:00 at weekends, only the offset keeps
+// tracking that. A pinned time silently stops matching reality on any day
+// with different opening hours, and nothing in the app would say so.
+//
+// A pinned time still wins where one is set, so nothing already configured
+// changes meaning. Everything that needs a station's hours — the rosters, the
+// worker's own shift list, the operator's pre-filled approval, the hour totals
+// and the exports — resolves them here, so they cannot drift apart.
+function stationTimes(store, date, station) {
+  const ds = store.daySettings?.[date] || {};
+  const dayOpen = ds.opensAt || store.defaultOpensAt || '10:00';
+  const dayClose = ds.closesAt || store.defaultClosesAt || '19:00';
+  const offStart = Number(station?.offsetStart) || 0;
+  const offEnd = Number(station?.offsetEnd) || 0;
+  return {
+    opensAt: station?.opensAt || minutesToHHMM(hhmmToMinutes(dayOpen) + offStart),
+    closesAt: station?.closesAt || minutesToHHMM(hhmmToMinutes(dayClose) + offEnd),
+  };
+}
+
+function getShiftHours(store, date, station) {
+  const { opensAt, closesAt } = stationTimes(store, date, station);
+  const mins = hhmmToMinutes(closesAt) - hhmmToMinutes(opensAt);
+  return mins > 0 ? mins / 60 : 0;
 }
 
 function hoursBetween(start, end) {
@@ -319,8 +353,7 @@ function sanitizeHourLogsForOperator(store) {
   return (store.hourLogs || []).map((h) => {
     const station = stationMap.get(h.stationId);
     const ds = store.daySettings?.[h.date] || {};
-    const plannedStart = station?.opensAt || ds.opensAt || store.defaultOpensAt || '10:00';
-    const plannedEnd = station?.closesAt || ds.closesAt || store.defaultClosesAt || '19:00';
+    const { opensAt: plannedStart, closesAt: plannedEnd } = stationTimes(store, h.date, station);
     return {
       id: h.id,
       date: h.date,
@@ -509,9 +542,7 @@ function workerScheduleData(store, worker) {
         const ov = dayOv[stationId];
         const needed = ov !== undefined ? (ov.required ?? station?.required ?? 1) : (station?.required || 1);
         if (needed === 0) continue;
-        const ds = store.daySettings?.[date] || {};
-        const opensAt = station?.opensAt || ds.opensAt || store.defaultOpensAt || '10:00';
-        const closesAt = station?.closesAt || ds.closesAt || store.defaultClosesAt || '19:00';
+        const { opensAt, closesAt } = stationTimes(store, date, station);
         shifts.push({ date, month, stationId, stationName: ov?.mergedLabel || station?.name || stationId, opensAt, closesAt });
       }
     }
@@ -622,8 +653,7 @@ function operatorScheduleView(store) {
         result[date][station.id] = {
           stationName: ov?.mergedLabel || station.name,
           hidden: needed === 0,
-          opensAt: station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt,
-          closesAt: station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt,
+          ...stationTimes(store, date, station),
           workers: wids.map((id) => workerMap.get(id) || id),
         };
       }
@@ -653,8 +683,7 @@ function adminView(store) {
         needed,
         hidden: needed === 0,
         mergeWith: ov?.mergeWith || null,
-        opensAt: station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt,
-        closesAt: station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt,
+        ...stationTimes(store, date, station),
         workerIds: wids,
         workerNames: wids.map((id) => workerMap.get(id) || id),
       };
@@ -825,8 +854,7 @@ function exportScheduleCSV(store) {
       const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
       if (needed === 0) continue;
       const wids = sched[date]?.[station.id] || [];
-      const opensAt = station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt;
-      const closesAt = station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt;
+      const { opensAt, closesAt } = stationTimes(store, date, station);
       lines.push([
         `"${date}"`,
         `"${ov?.mergedLabel || station.name}"`,
@@ -855,8 +883,7 @@ async function exportScheduleXLSX(store) {
       const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
       if (needed === 0) continue;
       const wids = sched[date]?.[station.id] || [];
-      const opensAt = station.opensAt || store.daySettings?.[date]?.opensAt || store.defaultOpensAt;
-      const closesAt = station.closesAt || store.daySettings?.[date]?.closesAt || store.defaultClosesAt;
+      const { opensAt, closesAt } = stationTimes(store, date, station);
       ws.addRow([
         date,
         ov?.mergedLabel || station.name,
@@ -1411,6 +1438,10 @@ async function handleRequest(req, res) {
             required: Number(st.required) || 1,
             opensAt: st.opensAt !== undefined ? st.opensAt : (ex.opensAt || ''),
             closesAt: st.closesAt !== undefined ? st.closesAt : (ex.closesAt || ''),
+            // Minutes against the day's own hours; negative means earlier.
+            // Clamped to ±12h so a typo cannot invent a shift.
+            offsetStart: clampOffset(st.offsetStart !== undefined ? st.offsetStart : ex.offsetStart),
+            offsetEnd: clampOffset(st.offsetEnd !== undefined ? st.offsetEnd : ex.offsetEnd),
           };
         });
       }
