@@ -574,6 +574,7 @@
     const sched = d.schedule || {};
 
     const thead = `<tr><th>Dátum</th>${stations.map(s => `<th>${esc(s.name)}</th>`).join('')}<th>Voľní</th></tr>`;
+    const opDivider = monthDividers(openDays, stations.length + 2);
     const tbody = openDays.map(date => {
       const cells = stations.map(st => {
         const cell = sched[date]?.[st.id] || {};
@@ -595,7 +596,7 @@
           ? free.map(w => `<span class="free-chip" title="${esc(w.stations.join(' · '))} · ${w.shifts} zmien">${esc(w.name)}</span>`).join('')
           : '<span class="text-muted">—</span>'
       }</td>`;
-      return `<tr><td><strong>${fmtShort(date)}</strong></td>${cells}${freeCell}</tr>`;
+      return opDivider(date) + `<tr><td><strong>${fmtShort(date)}</strong></td>${cells}${freeCell}</tr>`;
     }).join('');
 
     return `
@@ -984,6 +985,23 @@
   }
 
   // ─── SETTINGS TAB ─────────────────────────────────────────────────────────
+  // A schedule can span two published months at once, which is the point of the
+  // concurrent periods — but the rows then run together with nothing but the
+  // date to mark the seam. Only drawn when more than one month is on screen.
+  function monthDividers(dates, colspan) {
+    const months = [...new Set(dates.map(d => d.slice(0, 7)))];
+    if (months.length < 2) return () => '';
+    let last = null;
+    return (date) => {
+      const ym = date.slice(0, 7);
+      if (ym === last) return '';
+      last = ym;
+      return `<tr class="stack-skip month-head">
+        <td colspan="${colspan}" style="background:var(--brand-navy);color:#fff;font-weight:700;padding:7px 11px">${esc(monthLabel(ym))}</td>
+      </tr>`;
+    };
+  }
+
   const MONTH_NAMES = ['január','február','marec','apríl','máj','jún',
                        'júl','august','september','október','november','december'];
 
@@ -1243,15 +1261,36 @@
         </tr>`;
       }
     }
-    const dayOpts = sortedOpen.map(d => `<option value="${esc(d)}">${fmtShort(d)}</option>`).join('');
+    // The same exception usually applies to every Friday of the month, and
+    // adding it one day at a time means finding each date by hand. Tick the
+    // days, or grab a whole weekday at once.
+    const DOW = ['Ne', 'Po', 'Ut', 'St', 'Šv', 'Pi', 'So'];
+    const presentDows = [...new Set(sortedOpen.map(d => new Date(d + 'T12:00:00').getDay()))]
+      .sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
+    const dowBtns = presentDows.map(n => {
+      const count = sortedOpen.filter(d => new Date(d + 'T12:00:00').getDay() === n).length;
+      return `<button type="button" class="btn btn-secondary btn-sm ov-dow" data-dow="${n}">všetky ${DOW[n]} (${count})</button>`;
+    }).join('');
+
+    const dayChecks = sortedOpen.map(d => `
+      <label class="stn-check-lbl" style="white-space:nowrap">
+        <input type="checkbox" class="ov-day" value="${esc(d)}"> ${fmtShort(d)}
+      </label>`).join('');
+
     const stnOpts = S.localStations.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
     const stnOpts2 = `<option value="">— nespájať —</option>` + S.localStations.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
     return `
       ${rows ? `<table class="stack-titled" style="margin-bottom:12px;width:auto"><thead><tr><th>Deň</th><th>Stanovisko</th><th>Počet</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="text-muted" style="margin-bottom:10px">Žiadne výnimky.</p>'}
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-        <div class="form-group" style="margin:0">
-          <label>Deň</label><select id="ov-date" style="width:140px">${dayOpts}</select>
+      <div class="form-group" style="margin:0 0 10px">
+        <label>Dni <span class="text-muted" style="font-weight:400;font-size:.8rem">— vyber jeden alebo viac naraz</span></label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+          ${dowBtns}
+          <button type="button" class="btn btn-secondary btn-sm" id="ov-day-none">zrušiť výber</button>
         </div>
+        <div class="stn-checks" style="max-height:120px;overflow-y:auto">${dayChecks}</div>
+        <div id="ov-day-count" class="text-muted" style="font-size:.8rem;margin-top:4px">Nevybraný žiadny deň.</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
         <div class="form-group" style="margin:0">
           <label>Ponechané stanovisko</label><select id="ov-stn" style="width:150px">${stnOpts}</select>
         </div>
@@ -1438,12 +1477,39 @@
           refreshOverridesCard();
         });
       });
+      const selectedDays = () =>
+        [...document.querySelectorAll('.ov-day:checked')].map(c => c.value);
+
+      const updateDayCount = () => {
+        const n = selectedDays().length;
+        const el = document.getElementById('ov-day-count');
+        if (el) el.textContent = n ? `Vybraných ${n} ${n === 1 ? 'deň' : (n < 5 ? 'dni' : 'dní')}.` : 'Nevybraný žiadny deň.';
+      };
+
+      document.querySelectorAll('.ov-day').forEach(c => c.addEventListener('change', updateDayCount));
+
+      document.querySelectorAll('.ov-dow').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const dow = Number(btn.dataset.dow);
+          document.querySelectorAll('.ov-day').forEach(c => {
+            if (new Date(c.value + 'T12:00:00').getDay() === dow) c.checked = true;
+          });
+          updateDayCount();
+        });
+      });
+
+      document.getElementById('ov-day-none')?.addEventListener('click', () => {
+        document.querySelectorAll('.ov-day').forEach(c => { c.checked = false; });
+        updateDayCount();
+      });
+
       document.getElementById('ov-add')?.addEventListener('click', () => {
-        const date = document.getElementById('ov-date')?.value;
+        const dates = selectedDays();
         const sid  = document.getElementById('ov-stn')?.value;
         const req  = Number(document.getElementById('ov-req')?.value ?? 1);
         const mergeSid = document.getElementById('ov-merge')?.value || '';
-        if (!date || !sid) return;
+        if (!dates.length) { alert('Vyber aspoň jeden deň.'); return; }
+        if (!sid) return;
         if (mergeSid && mergeSid === sid) { alert('Nemôžeš zlúčiť stanovisko samo so sebou.'); return; }
         let lbl = '';
         if (mergeSid) {
@@ -1451,10 +1517,12 @@
           const secondary = S.localStations.find(s => s.id === mergeSid);
           lbl = `${primary?.name || ''} + ${secondary?.name || ''}`;
         }
-        if (!S.stationOverrides[date]) S.stationOverrides[date] = {};
-        S.stationOverrides[date][sid] = { required: req, mergedLabel: lbl, mergeWith: mergeSid || null };
-        if (mergeSid) {
-          S.stationOverrides[date][mergeSid] = { required: 0, mergedLabel: '', _mergedInto: sid };
+        for (const date of dates) {
+          if (!S.stationOverrides[date]) S.stationOverrides[date] = {};
+          S.stationOverrides[date][sid] = { required: req, mergedLabel: lbl, mergeWith: mergeSid || null };
+          if (mergeSid) {
+            S.stationOverrides[date][mergeSid] = { required: 0, mergedLabel: '', _mergedInto: sid };
+          }
         }
         refreshOverridesCard();
       });
@@ -1611,6 +1679,7 @@
       <th>Voľní</th>
     </tr>`;
 
+    const admDivider = monthDividers(openDays, stations.length + 2);
     const tbody = openDays.map(date => {
       // Ensure schedEdits for this date is initialized
       if (!S.schedEdits[date]) S.schedEdits[date] = {};
@@ -1670,7 +1739,7 @@
              style="margin-top:6px;white-space:nowrap">⇄ Zámena</button>`
         : '';
 
-      return `<tr>
+      return admDivider(date) + `<tr>
         <td style="white-space:nowrap"><strong>${fmtShort(date)}</strong><br>${swapBtn}</td>
         ${stCells}
         <td class="sched-cell">${freeHtml}</td>
