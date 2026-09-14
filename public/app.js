@@ -47,6 +47,9 @@
     localGroups: [],
     activeGroup: null,
     schedEdits: {},
+    openSettings: new Set(),  // settings sections the admin has open (persisted)
+    openDayMonths: null,     // month groups open in the per-day times table
+    openHourMonths: null,    // month groups open in the admin hour-log detail
     openMonths: new Set(),   // schedule month groups the admin/operator has opened
     opTab: 'dnes',
     msgType: 'availability',
@@ -1039,6 +1042,68 @@
     });
   }
 
+  // Settings is seven sections on one page and you come for one of them, so
+  // they fold. Which ones are open is kept in localStorage: it is a per-device
+  // convenience, not data, and it is the kind of thing that is irritating to
+  // set again on every visit.
+  const SETTINGS_OPEN_KEY = 'flp-settings-open';
+
+  function loadOpenSettings() {
+    try {
+      const raw = localStorage.getItem(SETTINGS_OPEN_KEY);
+      return new Set(raw ? JSON.parse(raw) : []);
+    } catch { return new Set(); }
+  }
+
+  function saveOpenSettings() {
+    try { localStorage.setItem(SETTINGS_OPEN_KEY, JSON.stringify([...S.openSettings])); } catch { /* private window */ }
+  }
+
+  // The body is always rendered — collapsing is display only, so Save still
+  // finds every field, including those inside a closed section.
+  function settingsSection(id, title, body) {
+    const open = S.openSettings.has(id);
+    return `<div class="card sect${open ? '' : ' sect-closed'}" data-sect="${esc(id)}">
+      <div class="section-title sect-head" data-sect="${esc(id)}">
+        <span class="chev">${open ? '▾' : '▸'}</span><span style="flex:1">${title}</span>
+      </div>
+      <div class="sect-body">${body}</div>
+    </div>`;
+  }
+
+  function attachDayMonthToggles() {
+    document.querySelectorAll('.day-head[data-daymonth]').forEach(head => {
+      head.addEventListener('click', () => {
+        const ym = head.dataset.daymonth;
+        if (!S.openDayMonths) S.openDayMonths = new Set();
+        const open = S.openDayMonths.has(ym);
+        if (open) S.openDayMonths.delete(ym); else S.openDayMonths.add(ym);
+        // Toggle in place — the time fields must keep whatever is typed in them.
+        document.querySelectorAll(`tr[data-daymonth="${ym}"]:not(.day-head)`)
+          .forEach(tr => tr.classList.toggle('row-collapsed', open));
+        const chev = head.querySelector('.chev');
+        if (chev) chev.textContent = open ? '▸' : '▾';
+      });
+    });
+  }
+
+  function attachSettingsSections() {
+    document.querySelectorAll('.sect-head').forEach(head => {
+      head.addEventListener('click', () => {
+        const id = head.dataset.sect;
+        const card = head.closest('.sect');
+        if (!card) return;
+        // Toggle in place rather than re-render: anything typed and not yet
+        // saved would be thrown away by a rebuild.
+        const nowOpen = card.classList.toggle('sect-closed') === false;
+        if (nowOpen) S.openSettings.add(id); else S.openSettings.delete(id);
+        const chev = head.querySelector('.chev');
+        if (chev) chev.textContent = nowOpen ? '▾' : '▸';
+        saveOpenSettings();
+      });
+    });
+  }
+
   const MONTH_NAMES = ['január','február','marec','apríl','máj','jún',
                        'júl','august','september','október','november','december'];
 
@@ -1062,12 +1127,19 @@
       byMonth.get(ym).push(date);
     }
 
+    // One month is left open so the section isn't empty on arrival: the one
+    // being edited, which is the one you came for.
+    const multi = byMonth.size > 1;
+    if (multi && !S.openDayMonths) S.openDayMonths = new Set([d.month]);
+    const dayOpen = (ym) => !multi || S.openDayMonths.has(ym);
+
     let html = '';
     for (const [ym, dates] of byMonth) {
       const outside = dates.filter(dt => (from && dt < from) || (to && dt > to));
-      html += `<tr class="stack-skip month-head">
+      const open = dayOpen(ym);
+      html += `<tr class="stack-skip month-head day-head"${multi ? ` data-daymonth="${esc(ym)}"` : ''}>
         <td colspan="3" style="background:var(--brand-navy);color:#fff;font-weight:700;padding:7px 11px">
-          ${esc(monthLabel(ym))} <span style="font-weight:400;opacity:.8">— ${dates.length} ${dates.length === 1 ? 'deň' : (dates.length < 5 ? 'dni' : 'dní')}</span>
+          ${multi ? `<span class="chev">${open ? '▾' : '▸'}</span> ` : ''}${esc(monthLabel(ym))} <span style="font-weight:400;opacity:.8">— ${dates.length} ${dates.length === 1 ? 'deň' : (dates.length < 5 ? 'dni' : 'dní')}</span>
           ${outside.length
             ? `<span class="badge badge-warning" style="margin-left:8px;font-weight:600">mimo obdobia ${esc(from)} – ${esc(to)}</span>`
             : ''}
@@ -1076,7 +1148,7 @@
       for (const date of dates) {
         const ds = S.daySettings[date] || {};
         const isOut = (from && date < from) || (to && date > to);
-        html += `<tr${isOut ? ' style="background:#fdf8ee"' : ''}>
+        html += `<tr${open ? '' : ' class="row-collapsed"'} data-daymonth="${esc(ym)}"${isOut ? ' style="background:#fdf8ee"' : ''}>
           <td>${fmtShort(date)}${isOut ? ' <span class="text-muted" style="font-size:.72rem">(mimo)</span>' : ''}</td>
           <td>${timeInputHTML('dh-open', `data-date="${date}"`, ds.opensAt || defOpen, 'width:110px')}</td>
           <td>${timeInputHTML('dh-close', `data-date="${date}"`, ds.closesAt || defClose, 'width:110px')}</td>
@@ -1132,6 +1204,7 @@
   }
 
   function buildSettings() {
+    if (!S.openSettingsLoaded) { S.openSettings = loadOpenSettings(); S.openSettingsLoaded = true; }
     const d = S.data;
     const calHtml = buildCalendar(d.periodStart, d.periodEnd, [...S.openDays], [], 'open-days');
     const sortedOpen = [...S.openDays].sort();
@@ -1193,8 +1266,7 @@
 
     return `
       <div id="set-msg"></div>
-      <div class="card">
-        <div class="section-title">Plánovacie obdobie</div>
+      ${settingsSection('obdobie', 'Plánovacie obdobie', `
         ${monthChips}
         ${otherPubNote}
         <div class="form-row">
@@ -1224,50 +1296,39 @@
             <label>Štandardný čas do</label>
             ${timeInputHTML('', 'id="cfg-close"', d.defaultClosesAt||'19:00')}
           </div>
-        </div>
-      </div>
+        </div>`)}
 
-      <div class="card">
-        <div class="section-title">Otvorené dni</div>
+      ${settingsSection('dni', 'Otvorené dni', `
         <p class="text-muted" style="margin-bottom:8px">Klikni na deň aby si ho otvoril / zatvoril.</p>
         ${calHtml}
         ${sortedOpen.length ? `
           <div class="section-title">Časy pre jednotlivé dni</div>
           <table class="stack-titled" style="width:auto"><thead><tr><th>Deň</th><th>Od</th><th>Do</th></tr></thead>
-          <tbody id="dh-body">${dayRows}</tbody></table>` : ''}
-      </div>
+          <tbody id="dh-body">${dayRows}</tbody></table>` : ''}`)}
 
-      <div class="card" id="overrides-card">
-        <div class="section-title">Výnimky stanovísk <span class="text-muted" style="font-size:.8rem;font-weight:400">(napr. piatok — menej ľudí, zlúčenie)</span></div>
-        ${buildOverridesUI()}
-      </div>
+      ${settingsSection('vynimky', 'Výnimky stanovísk <span class="text-muted" style="font-size:.8rem;font-weight:400">(napr. piatok — menej ľudí, zlúčenie)</span>', `
+        <div id="overrides-card">${buildOverridesUI()}</div>`)}
 
-      <div class="card">
-        <div class="section-title">Stanoviská</div>
+      ${settingsSection('stanoviska', 'Stanoviská', `
         <div style="overflow-x:auto;margin-bottom:10px">
           <table><thead><tr><th>Meno</th><th>Počet ľudí</th><th>Pevný čas od</th><th>Pevný čas do</th><th>Posun oproti prevádzke</th><th></th></tr></thead>
           <tbody id="st-body">${stRows}</tbody></table>
         </div>
-        <button class="btn btn-secondary btn-sm" id="add-st">+ Pridať stanovisko</button>
-      </div>
+        <button class="btn btn-secondary btn-sm" id="add-st">+ Pridať stanovisko</button>`)}
 
-      <div class="card">
-        <div class="section-title">Brigádnici</div>
+      ${settingsSection('brigadnici', 'Brigádnici', `
         <div style="overflow-x:auto;margin-bottom:10px">
           <table><thead><tr><th>Meno</th><th>Povolené stanoviská</th><th>Heslo</th><th></th></tr></thead>
           <tbody id="w-body">${wRows}</tbody></table>
         </div>
-        <button class="btn btn-secondary btn-sm" id="add-w">+ Pridať brigádnika</button>
-      </div>
+        <button class="btn btn-secondary btn-sm" id="add-w">+ Pridať brigádnika</button>`)}
 
-      <div class="card">
-        <div class="section-title">Prevádzkar</div>
+      ${settingsSection('prevadzkari', 'Prevádzkar', `
         <div style="overflow-x:auto;margin-bottom:10px">
           <table><thead><tr><th>Meno</th><th>Heslo</th><th></th></tr></thead>
           <tbody id="op-body">${opRows}</tbody></table>
         </div>
-        <button class="btn btn-secondary btn-sm" id="add-op">+ Pridať prevádzku</button>
-      </div>
+        <button class="btn btn-secondary btn-sm" id="add-op">+ Pridať prevádzku</button>`)}
 
       <div class="actions">
         <button class="btn btn-primary" id="save-cfg">Uložiť nastavenia</button>
@@ -1343,6 +1404,9 @@
   }
 
   function attachSettings() {
+    attachSettingsSections();
+    attachDayMonthToggles();
+
     // Switch the working month — each month keeps its own dates and open days
     document.querySelectorAll('.month-jump').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -1407,6 +1471,7 @@
       const defOpen  = document.getElementById('cfg-open')?.value  || S.data.defaultOpensAt  || '10:00';
       const defClose = document.getElementById('cfg-close')?.value || S.data.defaultClosesAt || '19:00';
       body.innerHTML = dayHoursRows(defOpen, defClose);
+      attachDayMonthToggles();
     }
 
     // Stations
@@ -2241,6 +2306,14 @@
     );
     const pending = logs.filter(h => h.status === 'pending');
 
+    // Records pile up all season and it is nearly always the current month you
+    // want, so the detail folds by month with that one open.
+    const logMonths = [...new Set(logs.map(h => h.date.slice(0, 7)))].sort().reverse();
+    const multiMonth = logMonths.length > 1;
+    if (multiMonth && !S.openHourMonths) S.openHourMonths = new Set([logMonths[0]]);
+    const hourOpen = (ym) => !multiMonth || S.openHourMonths.has(ym);
+    let lastMonth = null;
+
     const detailRows = [...logs]
       .sort((a, b) => b.date.localeCompare(a.date))
       .map(h => {
@@ -2256,8 +2329,23 @@
             : esc(h.workerName));
         const delBtn = `<button class="btn btn-danger btn-sm del-hour" data-id="${esc(h.id)}"
           data-who="${esc(h.workerName)}" data-date="${fmtShort(h.date)}" title="Zmazať záznam">×</button>`;
+
+        const ym = h.date.slice(0, 7);
+        const open = hourOpen(ym);
+        let head = '';
+        if (multiMonth && ym !== lastMonth) {
+          lastMonth = ym;
+          const n = logs.filter(x => x.date.startsWith(ym)).length;
+          head = `<tr class="stack-skip month-head hour-head" data-hourmonth="${esc(ym)}">
+            <td colspan="8" style="background:var(--brand-navy);color:#fff;font-weight:700;padding:9px 11px">
+              <span class="chev">${open ? '▾' : '▸'}</span> ${esc(monthLabel(ym))}
+              <span style="font-weight:400;opacity:.8">— ${n} ${n === 1 ? 'záznam' : (n < 5 ? 'záznamy' : 'záznamov')}</span>
+            </td>
+          </tr>`;
+        }
+        const rowCls = open ? '' : ' row-collapsed';
         if (h.status !== 'approved') {
-          return `<tr>
+          return head + `<tr data-hourmonth="${esc(ym)}" class="${rowCls.trim()}">
             <td>${fmtShort(h.date)}</td><td>${stn}</td><td>${who}</td>
             <td>${esc(h.reportedStart)}–${esc(h.reportedEnd)}</td>
             <td><span class="badge badge-warning">⏳ Čaká</span></td>
@@ -2266,7 +2354,7 @@
         }
         const mismatch = (h.reportedStart !== h.approvedStart || h.reportedEnd !== h.approvedEnd);
         const diffH = hoursFromRange(h.approvedStart, h.approvedEnd) - hoursFromRange(h.reportedStart, h.reportedEnd);
-        return `<tr${mismatch ? ' style="background:#fdf3f2"' : ''}>
+        return head + `<tr data-hourmonth="${esc(ym)}" class="${rowCls.trim()}"${mismatch ? ' style="background:#fdf3f2"' : ''}>
           <td>${fmtShort(h.date)}</td><td>${stn}</td><td>${who}</td>
           <td>${esc(h.reportedStart)}–${esc(h.reportedEnd)}</td>
           <td>${esc(h.approvedStart)}–${esc(h.approvedEnd)}</td>
@@ -2311,6 +2399,19 @@
   }
 
   function attachAdminHours() {
+    document.querySelectorAll('.hour-head[data-hourmonth]').forEach(head => {
+      head.addEventListener('click', () => {
+        const ym = head.dataset.hourmonth;
+        if (!S.openHourMonths) S.openHourMonths = new Set();
+        const open = S.openHourMonths.has(ym);
+        if (open) S.openHourMonths.delete(ym); else S.openHourMonths.add(ym);
+        document.querySelectorAll(`tr[data-hourmonth="${ym}"]:not(.hour-head)`)
+          .forEach(tr => tr.classList.toggle('row-collapsed', open));
+        const chev = head.querySelector('.chev');
+        if (chev) chev.textContent = open ? '▸' : '▾';
+      });
+    });
+
     document.querySelectorAll('.del-hour').forEach(btn => {
       btn.addEventListener('click', async () => {
         const { id, who, date } = btn.dataset;

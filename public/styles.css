@@ -442,3 +442,12 @@ tr:hover td { background: #fafafa; }
 .month-head td { cursor: pointer; user-select: none; }
 .month-head td:hover { filter: brightness(1.15); }
 .month-head .chev { display: inline-block; width: 1em; }
+
+/* ─── Collapsible settings sections ──────────────────────────────────────── */
+/* The body stays in the DOM when closed — Save reads every field from there,
+   including the ones behind a closed section. */
+.sect-closed .sect-body { display: none !important; }
+.sect-head { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px; }
+.sect-closed .sect-head { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+.sect-head:hover { color: var(--orange-dark); }
+.sect-closed { padding-top: 16px; padding-bottom: 16px; }
