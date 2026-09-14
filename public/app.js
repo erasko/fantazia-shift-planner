@@ -23,6 +23,7 @@
       if (!heads.length) return;
       const titled = table.classList.contains('stack-titled');
       table.querySelectorAll('tbody tr').forEach(tr => {
+        if (tr.classList.contains('stack-skip')) return; // full-width divider
         [...tr.children].forEach((td, i) => {
           if (titled && i === 0) return td.classList.add('stack-head');
           if (heads[i]) td.setAttribute('data-label', heads[i]);
@@ -983,6 +984,53 @@
   }
 
   // ─── SETTINGS TAB ─────────────────────────────────────────────────────────
+  const MONTH_NAMES = ['január','február','marec','apríl','máj','jún',
+                       'júl','august','september','október','november','december'];
+
+  function monthLabel(ym) {
+    const [y, m] = ym.split('-').map(Number);
+    return `${MONTH_NAMES[m - 1]} ${y}`;
+  }
+
+  // Open days run in one flat list, and switching months can leave the previous
+  // month's days behind in it — so the list mixes months with nothing to say
+  // where one ends. Group by month, and mark days sitting outside the period
+  // being edited, which is what a leftover looks like.
+  function dayHoursRows(defOpen, defClose) {
+    const d = S.data;
+    const from = d.periodStart || '';
+    const to = d.periodEnd || '';
+    const byMonth = new Map();
+    for (const date of [...S.openDays].sort()) {
+      const ym = date.slice(0, 7);
+      if (!byMonth.has(ym)) byMonth.set(ym, []);
+      byMonth.get(ym).push(date);
+    }
+
+    let html = '';
+    for (const [ym, dates] of byMonth) {
+      const outside = dates.filter(dt => (from && dt < from) || (to && dt > to));
+      html += `<tr class="stack-skip month-head">
+        <td colspan="3" style="background:var(--brand-navy);color:#fff;font-weight:700;padding:7px 11px">
+          ${esc(monthLabel(ym))} <span style="font-weight:400;opacity:.8">— ${dates.length} ${dates.length === 1 ? 'deň' : (dates.length < 5 ? 'dni' : 'dní')}</span>
+          ${outside.length
+            ? `<span class="badge badge-warning" style="margin-left:8px;font-weight:600">mimo obdobia ${esc(from)} – ${esc(to)}</span>`
+            : ''}
+        </td>
+      </tr>`;
+      for (const date of dates) {
+        const ds = S.daySettings[date] || {};
+        const isOut = (from && date < from) || (to && date > to);
+        html += `<tr${isOut ? ' style="background:#fdf8ee"' : ''}>
+          <td>${fmtShort(date)}${isOut ? ' <span class="text-muted" style="font-size:.72rem">(mimo)</span>' : ''}</td>
+          <td>${timeInputHTML('dh-open', `data-date="${date}"`, ds.opensAt || defOpen, 'width:110px')}</td>
+          <td>${timeInputHTML('dh-close', `data-date="${date}"`, ds.closesAt || defClose, 'width:110px')}</td>
+        </tr>`;
+      }
+    }
+    return html;
+  }
+
   // Same rule as the server's stationTimes(): a pinned time wins, otherwise
   // the day's hours shifted by the offset.
   function resolveStationTimes(st, dayOpen, dayClose) {
@@ -1033,14 +1081,7 @@
     const calHtml = buildCalendar(d.periodStart, d.periodEnd, [...S.openDays], [], 'open-days');
     const sortedOpen = [...S.openDays].sort();
 
-    const dayRows = sortedOpen.map(date => {
-      const ds = S.daySettings[date] || {};
-      return `<tr>
-        <td>${fmtShort(date)}</td>
-        <td>${timeInputHTML('dh-open', `data-date="${date}"`, ds.opensAt || d.defaultOpensAt || '10:00', 'width:110px')}</td>
-        <td>${timeInputHTML('dh-close', `data-date="${date}"`, ds.closesAt || d.defaultClosesAt || '19:00', 'width:110px')}</td>
-      </tr>`;
-    }).join('');
+    const dayRows = dayHoursRows(d.defaultOpensAt || '10:00', d.defaultClosesAt || '19:00');
 
     const stRows = S.localStations.map((st, i) => `
       <tr>
@@ -1289,15 +1330,7 @@
       if (!body) return;
       const defOpen  = document.getElementById('cfg-open')?.value  || S.data.defaultOpensAt  || '10:00';
       const defClose = document.getElementById('cfg-close')?.value || S.data.defaultClosesAt || '19:00';
-      const sorted = [...S.openDays].sort();
-      body.innerHTML = sorted.map(date => {
-        const ds = S.daySettings[date] || {};
-        return `<tr>
-          <td>${fmtShort(date)}</td>
-          <td>${timeInputHTML('dh-open', `data-date="${date}"`, ds.opensAt||defOpen, 'width:110px')}</td>
-          <td>${timeInputHTML('dh-close', `data-date="${date}"`, ds.closesAt||defClose, 'width:110px')}</td>
-        </tr>`;
-      }).join('');
+      body.innerHTML = dayHoursRows(defOpen, defClose);
     }
 
     // Stations
