@@ -434,3 +434,11 @@ tr:hover td { background: #fafafa; }
   td select, td .time-input { width: 100%; max-width: none; }
   td .btn-sm { padding: 7px 12px; font-size: 0.84rem; }
 }
+
+/* ─── Collapsible month groups ───────────────────────────────────────────── */
+/* Beats the display:block that the mobile card layout puts on table rows. */
+.row-collapsed { display: none !important; }
+
+.month-head td { cursor: pointer; user-select: none; }
+.month-head td:hover { filter: brightness(1.15); }
+.month-head .chev { display: inline-block; width: 1em; }

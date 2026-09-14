@@ -47,6 +47,7 @@
     localGroups: [],
     activeGroup: null,
     schedEdits: {},
+    openMonths: new Set(),   // schedule month groups the admin/operator has opened
     opTab: 'dnes',
     msgType: 'availability',
   };
@@ -574,7 +575,7 @@
     const sched = d.schedule || {};
 
     const thead = `<tr><th>Dátum</th>${stations.map(s => `<th>${esc(s.name)}</th>`).join('')}<th>Voľní</th></tr>`;
-    const opDivider = monthDividers(openDays, stations.length + 2);
+    const opDiv = monthDividers(openDays, stations.length + 2);
     const tbody = openDays.map(date => {
       const cells = stations.map(st => {
         const cell = sched[date]?.[st.id] || {};
@@ -596,7 +597,7 @@
           ? free.map(w => `<span class="free-chip" title="${esc(w.stations.join(' · '))} · ${w.shifts} zmien">${esc(w.name)}</span>`).join('')
           : '<span class="text-muted">—</span>'
       }</td>`;
-      return opDivider(date) + `<tr><td><strong>${fmtShort(date)}</strong></td>${cells}${freeCell}</tr>`;
+      return opDiv.header(date) + `<tr${opDiv.rowAttrs(date)}><td><strong>${fmtShort(date)}</strong></td>${cells}${freeCell}</tr>`;
     }).join('');
 
     return `
@@ -853,6 +854,7 @@
       renderOperatorMain();
     });
 
+    if (S.opTab === 'rozpis') attachMonthToggles(renderOperatorMain);
     if (S.opTab === 'hodiny' || S.opTab === 'dnes') attachOperatorHours();
     if (S.opTab === 'hodiny') attachOperatorOwnHours();
   }
@@ -986,20 +988,55 @@
 
   // ─── SETTINGS TAB ─────────────────────────────────────────────────────────
   // A schedule can span two published months at once, which is the point of the
-  // concurrent periods — but the rows then run together with nothing but the
-  // date to mark the seam. Only drawn when more than one month is on screen.
+  // concurrent periods — but a month is twelve or more rows, so both together
+  // is a long scroll to reach the one you came for. Each month becomes a bar
+  // you open, and they start closed.
+  //
+  // Only when there is more than one month: a single month has nothing to be
+  // chosen between, and hiding it behind a click would just be in the way.
   function monthDividers(dates, colspan) {
     const months = [...new Set(dates.map(d => d.slice(0, 7)))];
-    if (months.length < 2) return () => '';
+    if (months.length < 2) {
+      return { header: () => '', rowAttrs: () => '' };
+    }
+    const counts = new Map(months.map(m => [m, dates.filter(d => d.startsWith(m)).length]));
+    const isOpen = (ym) => S.openMonths.has(ym);
     let last = null;
-    return (date) => {
-      const ym = date.slice(0, 7);
-      if (ym === last) return '';
-      last = ym;
-      return `<tr class="stack-skip month-head">
-        <td colspan="${colspan}" style="background:var(--brand-navy);color:#fff;font-weight:700;padding:7px 11px">${esc(monthLabel(ym))}</td>
-      </tr>`;
+    return {
+      header(date) {
+        const ym = date.slice(0, 7);
+        if (ym === last) return '';
+        last = ym;
+        const open = isOpen(ym);
+        const n = counts.get(ym) || 0;
+        return `<tr class="stack-skip month-head" data-month="${esc(ym)}">
+          <td colspan="${colspan}" style="background:var(--brand-navy);color:#fff;font-weight:700;padding:9px 11px">
+            <span class="chev">${open ? '▾' : '▸'}</span>
+            ${esc(monthLabel(ym))}
+            <span style="font-weight:400;opacity:.8">— ${n} ${n === 1 ? 'deň' : (n < 5 ? 'dni' : 'dní')}</span>
+            ${open ? '' : '<span style="font-weight:400;opacity:.65;margin-left:6px;font-size:.85em">klikni pre zobrazenie</span>'}
+          </td>
+        </tr>`;
+      },
+      rowAttrs(date) {
+        const ym = date.slice(0, 7);
+        return ` data-month="${esc(ym)}"${isOpen(ym) ? '' : ' class="row-collapsed"'}`;
+      },
     };
+  }
+
+  // Clicking a month bar opens or closes it. The open set lives on S so it
+  // survives the re-render that follows every edit in the schedule.
+  function attachMonthToggles(rerender) {
+    document.querySelectorAll('.month-head').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const ym = tr.dataset.month;
+        if (!ym) return;
+        if (S.openMonths.has(ym)) S.openMonths.delete(ym);
+        else S.openMonths.add(ym);
+        rerender();
+      });
+    });
   }
 
   const MONTH_NAMES = ['január','február','marec','apríl','máj','jún',
@@ -1679,7 +1716,7 @@
       <th>Voľní</th>
     </tr>`;
 
-    const admDivider = monthDividers(openDays, stations.length + 2);
+    const admDiv = monthDividers(openDays, stations.length + 2);
     const tbody = openDays.map(date => {
       // Ensure schedEdits for this date is initialized
       if (!S.schedEdits[date]) S.schedEdits[date] = {};
@@ -1739,7 +1776,7 @@
              style="margin-top:6px;white-space:nowrap">⇄ Zámena</button>`
         : '';
 
-      return admDivider(date) + `<tr>
+      return admDiv.header(date) + `<tr${admDiv.rowAttrs(date)}>
         <td style="white-space:nowrap"><strong>${fmtShort(date)}</strong><br>${swapBtn}</td>
         ${stCells}
         <td class="sched-cell">${freeHtml}</td>
@@ -1868,6 +1905,11 @@
   }
 
   function attachSchedule() {
+    attachMonthToggles(() => {
+      document.getElementById('tab-content').innerHTML = buildSchedule();
+      attachSchedule();
+    });
+
     document.querySelectorAll('.swap-btn').forEach(btn => {
       btn.addEventListener('click', () => openSwapDialog(btn.dataset.date));
     });
