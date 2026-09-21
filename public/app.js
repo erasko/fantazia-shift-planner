@@ -578,7 +578,7 @@
     const sched = d.schedule || {};
 
     const thead = `<tr><th>Dátum</th>${stations.map(s => `<th>${esc(s.name)}</th>`).join('')}<th>Voľní</th></tr>`;
-    const opDiv = monthDividers(openDays, stations.length + 2, (dt) => (d.monthOfDay || {})[dt] || dt.slice(0, 7));
+    const opDiv = monthDividers(openDays, stations.length + 2, periodOfDate);
     const tbody = openDays.map(date => {
       const cells = stations.map(st => {
         const cell = sched[date]?.[st.id] || {};
@@ -1082,7 +1082,7 @@
     // in. A period runs Friday to Sunday across the turn of the month, so
     // October's roster ends on the 1st of November — splitting that off under
     // its own heading breaks one weekend, and one period, in half.
-    const keyOf = periodOf || ((d) => d.slice(0, 7));
+    const keyOf = periodOf || periodOfDate;
     const months = [...new Set(dates.map(keyOf))];
     if (months.length < 2) {
       return { header: () => '', rowAttrs: () => '' };
@@ -1189,6 +1189,25 @@
     });
   }
 
+  // Which period a day belongs to.
+  //
+  // A period runs Friday to Sunday and may cross the turn of the month, so the
+  // month in the date is only a guess — October's roster ends on the 1st of
+  // November. The answer comes from the open days each period actually holds:
+  // the operator is handed that mapping, the admin has the periods themselves.
+  //
+  // Everything that groups or counts by month goes through here, so the roster,
+  // the per-day times and the hour records all draw the same line.
+  function periodOfDate(date) {
+    const d = S.data || {};
+    if (d.monthOfDay && d.monthOfDay[date]) return d.monthOfDay[date];
+    if (d.month && (d.openDays || []).includes(date)) return d.month;
+    for (const [m, p] of Object.entries(d.periods || {})) {
+      if ((p.openDays || []).includes(date)) return m;
+    }
+    return date.slice(0, 7);
+  }
+
   const MONTH_NAMES = ['január','február','marec','apríl','máj','jún',
                        'júl','august','september','október','november','december'];
 
@@ -1209,7 +1228,7 @@
     // month, so a period ending on the 1st is not split off on its own.
     const byMonth = new Map();
     for (const date of [...S.openDays].sort()) {
-      const ym = (from && to && date >= from && date <= to) ? (d.month || date.slice(0, 7)) : date.slice(0, 7);
+      const ym = periodOfDate(date);
       if (!byMonth.has(ym)) byMonth.set(ym, []);
       byMonth.get(ym).push(date);
     }
@@ -2451,7 +2470,7 @@
 
     // Records pile up all season and it is nearly always the current month you
     // want, so the detail folds by month with that one open.
-    const logMonths = [...new Set(logs.map(h => h.date.slice(0, 7)))].sort().reverse();
+    const logMonths = [...new Set(logs.map(h => periodOfDate(h.date)))].sort().reverse();
     const multiMonth = logMonths.length > 1;
     if (multiMonth && !S.openHourMonths) S.openHourMonths = new Set([logMonths[0]]);
     const hourOpen = (ym) => !multiMonth || S.openHourMonths.has(ym);
@@ -2486,12 +2505,12 @@
           data-who="${esc(h.workerName)}" data-date="${fmtShort(h.date)}" title="Zmazať záznam">×</button>`;
         const actions = `<div style="display:flex;gap:4px">${editBtn}${delBtn}</div>`;
 
-        const ym = h.date.slice(0, 7);
+        const ym = periodOfDate(h.date);
         const open = hourOpen(ym);
         let head = '';
         if (multiMonth && ym !== lastMonth) {
           lastMonth = ym;
-          const n = logs.filter(x => x.date.startsWith(ym)).length;
+          const n = logs.filter(x => periodOfDate(x.date) === ym).length;
           head = `<tr class="stack-skip month-head hour-head" data-hourmonth="${esc(ym)}">
             <td colspan="8" style="background:var(--brand-navy);color:#fff;font-weight:700;padding:9px 11px">
               <span class="chev">${open ? '▾' : '▸'}</span> ${esc(monthLabel(ym))}
