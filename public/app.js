@@ -1056,6 +1056,20 @@
   }
 
   // ─── SETTINGS TAB ─────────────────────────────────────────────────────────
+  // Same rule as the server's monthPeriod(): the park's weekend is Friday to
+  // Sunday and is staffed as one, so a period never ends mid-weekend.
+  function weekendPeriodFor(month) {
+    const [y, m] = String(month).split('-').map(Number);
+    if (!y || !m) return null;
+    const iso = (dt) => `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+    const start = new Date(y, m - 1, 1);
+    while (start.getDay() === 6 || start.getDay() === 0) start.setDate(start.getDate() + 1);
+    const end = new Date(y, m, 0);
+    if (end.getDay() === 5) end.setDate(end.getDate() + 2);
+    else if (end.getDay() === 6) end.setDate(end.getDate() + 1);
+    return { periodStart: iso(start), periodEnd: iso(end) };
+  }
+
   // A schedule can span two published months at once, which is the point of the
   // concurrent periods — but a month is twelve or more rows, so both together
   // is a long scroll to reach the one you came for. Each month becomes a bar
@@ -1348,7 +1362,15 @@
             <label>Koniec</label>
             <input type="date" id="cfg-end" value="${esc(d.periodEnd)}">
           </div>
+          <div class="form-group" style="flex:none;align-self:flex-end">
+            <button class="btn btn-secondary btn-sm" id="cfg-weekend" type="button">Dorovnať na celé víkendy</button>
+          </div>
         </div>
+        <p class="text-muted" style="font-size:.82rem;margin:-4px 0 12px">
+          Víkend sa berie ako celok (piatok–nedeľa). Keď mesiac končí v piatok alebo v sobotu,
+          obdobie pokračuje do nedele; keď začína v sobotu alebo nedeľu, začne až v pondelok —
+          tie dni dokončili predchádzajúci mesiac. Nový mesiac sa takto nastaví sám.
+        </p>
         <div class="form-row">
           <div class="form-group">
             <label>Deadline (dátum a čas)</label>
@@ -1470,6 +1492,15 @@
   }
 
   function attachSettings() {
+    document.getElementById('cfg-weekend')?.addEventListener('click', () => {
+      const month = document.getElementById('cfg-month')?.value || S.data.month;
+      const p = weekendPeriodFor(month);
+      if (!p) { setMsg('set-msg', '<div class="alert alert-error">Mesiac musí byť v tvare 2026-10.</div>'); return; }
+      document.getElementById('cfg-start').value = p.periodStart;
+      document.getElementById('cfg-end').value = p.periodEnd;
+      setMsg('set-msg', `<div class="alert alert-info">Obdobie dorovnané na <strong>${esc(p.periodStart)} – ${esc(p.periodEnd)}</strong>. Ulož nastavenia, aby sa to prejavilo.</div>`);
+    });
+
     attachSettingsSections();
     attachDayMonthToggles();
 

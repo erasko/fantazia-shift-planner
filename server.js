@@ -41,14 +41,40 @@ function lastDayOfMonth(yearMonth) {
   return new Date(y, m, 0).getDate();
 }
 
+function isoDate(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// A month's planning period, with the weekend kept whole.
+//
+// The park runs Friday to Sunday and the three days are staffed as one, but
+// the calendar does not care: October 2026 ends on Saturday the 31st, cutting
+// its last weekend in half. So a period that ends on a Friday or Saturday runs
+// on to the Sunday, and a month that opens on a Saturday or Sunday starts the
+// Monday after — those days finished the previous month's weekend and are
+// already spoken for. Nothing is counted twice: October takes the 1st of
+// November, and November begins on the 2nd.
+function monthPeriod(yearMonth) {
+  const [y, m] = yearMonth.split('-').map(Number);
+  const start = new Date(y, m - 1, 1);
+  while (start.getDay() === 6 || start.getDay() === 0) start.setDate(start.getDate() + 1);
+
+  const end = new Date(y, m - 1, lastDayOfMonth(yearMonth));
+  if (end.getDay() === 5) end.setDate(end.getDate() + 2);      // Friday → Sunday
+  else if (end.getDay() === 6) end.setDate(end.getDate() + 1); // Saturday → Sunday
+
+  return { periodStart: isoDate(start), periodEnd: isoDate(end) };
+}
+
 function defaultStore() {
   const now = new Date();
   const month = now.toISOString().slice(0, 7);
-  const last = lastDayOfMonth(month);
+  const period = monthPeriod(month);
   return {
     month,
-    periodStart: `${month}-01`,
-    periodEnd: `${month}-${String(last).padStart(2, '0')}`,
+    periodStart: period.periodStart,
+    periodEnd: period.periodEnd,
     availabilityDeadline: '',
     defaultOpensAt: '10:00',
     defaultClosesAt: '19:00',
@@ -236,9 +262,9 @@ function activateMonth(store, month) {
     store.openDays = p.openDays || [];
     store.availabilityDeadline = p.availabilityDeadline || '';
   } else {
-    const last = lastDayOfMonth(month);
-    store.periodStart = `${month}-01`;
-    store.periodEnd = `${month}-${String(last).padStart(2, '0')}`;
+    const period = monthPeriod(month);
+    store.periodStart = period.periodStart;
+    store.periodEnd = period.periodEnd;
     store.openDays = [];
     store.availabilityDeadline = '';
   }
