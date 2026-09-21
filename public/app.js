@@ -618,13 +618,23 @@
         ? `${esc(h.workerName)} <span class="text-muted" style="font-size:.78rem">(zastúpil ${esc(h.substituteForName || '?')})</span>`
         : esc(h.workerName);
       const stnName = esc(stationMap.get(h.stationId) || h.stationId);
+      const noReport = !h.reportedStart && h.status === 'approved';
 
       if (h.status === 'approved') {
+        // Re-editable: an operator who mistyped had no way back and had to ring
+        // the admin. Still their own figure only — the worker's stays hidden.
         return `<tr>
           <td>${fmtShort(h.date)}</td>
           <td>${stnName}</td>
           <td>${whoLabel}</td>
-          <td><span class="badge badge-success">✓ ${esc(h.approvedStart)}–${esc(h.approvedEnd)}</span></td>
+          <td>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              ${timeInputHTML('ap-start', `data-id="${esc(h.id)}"`, h.approvedStart, 'width:80px')}
+              <span>–</span>
+              ${timeInputHTML('ap-end', `data-id="${esc(h.id)}"`, h.approvedEnd, 'width:80px')}
+              <button class="btn btn-secondary btn-sm ap-hrs-btn" data-id="${esc(h.id)}">Zmeniť</button>
+            </div>
+          </td>
           <td class="text-muted" style="font-size:.8rem">${esc(h.approvedByName || '')}</td>
         </tr>`;
       }
@@ -781,6 +791,41 @@
       return a.date.localeCompare(b.date);
     });
 
+    // Somebody forgot to log a shift and is no longer able to: only the
+    // operator was there, so only the operator can put it in.
+    const todayStations = (d.schedule?.[d.today] || {});
+    const addForm = `<div class="card">
+        <div class="section-title">Zapísať za brigádnika, čo zabudol</div>
+        <p class="text-muted" style="margin-bottom:12px;font-size:.84rem">
+          Keď si niekto hodiny nezapísal a už nemôže, zapíš mu ich ty — čas, ktorý si videl.
+          V zázname bude uvedené, že ho si pridal ty.
+        </p>
+        <div class="form-row" style="align-items:flex-end">
+          <div class="form-group" style="max-width:200px">
+            <label>Brigádnik</label>
+            <select id="oa-worker">${(d.workers || []).map(w => `<option value="${esc(w.id)}">${esc(w.name)}</option>`).join('') || '<option value="">—</option>'}</select>
+          </div>
+          <div class="form-group" style="max-width:170px">
+            <label>Dátum</label>
+            <select id="oa-date">${(d.openDays || []).slice().sort().reverse().map(dt => `<option value="${esc(dt)}"${dt === d.today ? ' selected' : ''}>${fmtShort(dt)}</option>`).join('')}</select>
+          </div>
+          <div class="form-group" style="max-width:190px">
+            <label>Stanovisko</label>
+            <select id="oa-station">${(d.stations || []).map(st => `<option value="${esc(st.id)}">${esc(st.name)}</option>`).join('')}</select>
+          </div>
+          <div class="form-group" style="max-width:120px">
+            <label>Od</label>${timeInputHTML('oa-start', '', d.defaultOpensAt || '10:00', 'width:100px')}
+          </div>
+          <div class="form-group" style="max-width:120px">
+            <label>Do</label>${timeInputHTML('oa-end', '', d.defaultClosesAt || '19:00', 'width:100px')}
+          </div>
+          <div class="form-group" style="flex:none">
+            <button class="btn btn-secondary" id="oa-add">Zapísať</button>
+          </div>
+        </div>
+        <div id="oa-msg"></div>
+      </div>`;
+
     const approvals = !logs.length
       ? `<div class="card"><p class="text-muted">Zatiaľ nikto nenahlásil odpracované hodiny.</p></div>`
       : `<div class="card">
@@ -792,10 +837,31 @@
           </div>
         </div>`;
 
-    return buildOperatorOwnHours() + approvals;
+    return buildOperatorOwnHours() + addForm + approvals;
   }
 
   function attachOperatorHours() {
+    document.getElementById('oa-add')?.addEventListener('click', async () => {
+      const btn = document.getElementById('oa-add');
+      btn.disabled = true;
+      try {
+        const r = await api('POST', `/api/operator/${S.token}/hour-logs`, {
+          workerId: document.getElementById('oa-worker')?.value,
+          date: document.getElementById('oa-date')?.value,
+          stationId: document.getElementById('oa-station')?.value,
+          start: document.querySelector('.oa-start')?.value,
+          end: document.querySelector('.oa-end')?.value,
+        });
+        S.data.hourLogs = r.hourLogs;
+        S.opTab = 'hodiny';
+        renderOperatorMain();
+        setMsg('op-hrs-msg', '<div class="alert alert-success">✓ Zapísané.</div>');
+      } catch (e) {
+        setMsg('oa-msg', `<div class="alert alert-error">${esc(e.message)}</div>`);
+        btn.disabled = false;
+      }
+    });
+
     document.querySelectorAll('.ap-hrs-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;

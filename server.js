@@ -353,6 +353,53 @@ function hoursBetween(start, end) {
   return mins > 0 ? mins / 60 : 0;
 }
 
+// Every hand that touched an hour record, in order.
+//
+// A single "edited by" flag only ever remembers the last person, so a second
+// correction erased the trace of the first. These records settle pay disputes;
+// what matters is the whole sequence — who first wrote a figure, who changed
+// it and to what — so each step is appended rather than overwritten.
+//
+// Admin-only: the list names the operator, and a worker must not learn what
+// the operator entered. It reaches the admin views and the export, nowhere else.
+function auditStep(entry, step) {
+  if (!Array.isArray(entry.audit)) entry.audit = [];
+  entry.audit.push({ at: new Date().toISOString(), ...step });
+}
+
+const AUDIT_ACTIONS = {
+  reported: 'nahlásil',
+  approved: 'schválil',
+  created: 'pridal',
+  edited: 'upravil',
+};
+
+const AUDIT_ROLES = {
+  worker: 'brigádnik',
+  operator: 'prevádzkar',
+  admin: 'admin',
+};
+
+function auditLine(step) {
+  const who = `${AUDIT_ACTIONS[step.action] || step.action} ${AUDIT_ROLES[step.role] || step.role}`;
+  const name = step.name ? ` ${step.name}` : '';
+  const times = step.start && step.end ? ` ${step.start}–${step.end}` : '';
+  const when = step.at ? ` (${fmtDateTimeSK(step.at)})` : '';
+  return `${who}${name}${times}${when}`;
+}
+
+function fmtDateTimeSK(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}. ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// Anything beyond a worker reporting and an operator approving it.
+function wasTouchedByHand(entry) {
+  return (entry.audit || []).some((s) => s.action === 'created' || s.action === 'edited');
+}
+
 // An operator's own hours. Nobody approves these — there is no second party to
 // approve them — so reported and approved are the same figure and the entry is
 // final on submission. Unlike a worker's, they are theirs to see: the blind
@@ -870,13 +917,41 @@ async function exportActualHoursXLSX(store) {
       log.workerName,
       log.date,
       stationMap.get(log.stationId) || log.stationId,
-      `${log.reportedStart}–${log.reportedEnd}`,
+      log.reportedStart ? `${log.reportedStart}–${log.reportedEnd}` : 'nenahlásil',
       `${log.approvedStart}–${log.approvedEnd}`,
       Number((approvedH - reportedH).toFixed(1)),
-      (log.approvedByName || '') + (log.createdByAdmin ? ' (pridal admin)' : log.editedByAdmin ? ' (upravil admin)' : ''),
+      log.approvedByName || '',
     ]);
   }
   wsDisc.columns.forEach((col) => { col.width = 20; });
+
+  // Every record somebody wrote or rewrote by hand, step by step. The two
+  // sheets above show the figures; this one shows how they got there, which is
+  // the part that matters once anyone other than the worker and the operator
+  // has been in the record.
+  const touched = logs.filter(wasTouchedByHand);
+  const wsAudit = wb.addWorksheet('Zásahy');
+  wsAudit.addRow(['Brigádnik', 'Dátum', 'Stanovisko', 'Krok', 'Kto', 'Čas', 'Kedy']);
+  wsAudit.getRow(1).font = { bold: true };
+  wsAudit.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6B35' } };
+
+  if (!touched.length) {
+    wsAudit.addRow(['Žiadne — všetky záznamy vznikli bežnou cestou.']);
+  }
+  for (const log of touched) {
+    for (const step of log.audit || []) {
+      wsAudit.addRow([
+        log.workerName,
+        log.date,
+        log.stationId ? (stationMap.get(log.stationId) || log.stationId) : 'celá prevádzka',
+        AUDIT_ACTIONS[step.action] || step.action,
+        `${AUDIT_ROLES[step.role] || step.role}${step.name && step.name !== step.role ? ` ${step.name}` : ''}`,
+        step.start && step.end ? `${step.start}–${step.end}` : '',
+        step.at ? fmtDateTimeSK(step.at) : '',
+      ]);
+    }
+  }
+  wsAudit.columns.forEach((col) => { col.width = 20; });
 
   return wb.xlsx.writeBuffer();
 }
@@ -1386,6 +1461,10 @@ async function handleRequest(req, res) {
         approvedAt: null,
       };
       const idx = s.hourLogs.findIndex((h) => h.id === entry.id);
+      // The entry is rebuilt from scratch on every report, so carry the
+      // history across rather than starting it over.
+      entry.audit = idx >= 0 ? (s.hourLogs[idx].audit || []) : [];
+      auditStep(entry, { role: 'worker', name: worker.name, action: 'reported', start, end });
       if (idx >= 0) s.hourLogs[idx] = entry;
       else s.hourLogs.push(entry);
     });
@@ -1411,10 +1490,80 @@ async function handleRequest(req, res) {
       openDays: [...publishedOpenDays(store)].sort(),
       schedule: operatorScheduleView(store),
       freeWorkers: operatorFreeWorkers(store),
+      // Names only — an operator already sees these on the roster, but their
+      // personal links are what gets a worker into the app and stay out.
+      workers: (store.workers || []).map((w) => ({ id: w.id, name: w.name })),
       hourLogs: sanitizeHourLogsForOperator(store),
       myHourLogs: operatorOwnHourLogs(store, op.id),
       today: todayISO(),
     });
+  }
+
+  // Operator — enter hours for a worker who logged none.
+  //
+  // The blind split is not weakened by this: it exists so an operator cannot
+  // shape their figure around the worker's claim, and here there is no claim —
+  // the worker reported nothing. The operator writes only what they saw, which
+  // is what they would have entered at approval anyway. The reported side
+  // stays empty, so the record shows plainly that one side never spoke.
+  //
+  // What the operator still cannot do is see or change a time a worker did
+  // report, or delete anything.
+  const opAddM = p.match(/^\/api\/operator\/([a-zA-Z0-9]+)\/hour-logs$/);
+  if (opAddM && req.method === 'POST') {
+    const store = await getStore();
+    const op = (store.operators || []).find((o) => o.token === opAddM[1]);
+    if (!op) return respond(res, 404, { error: 'Odkaz neexistuje' });
+
+    const body = await parseBody(req);
+    const { date, stationId, workerId, start, end } = body;
+    if (!date || !stationId || !workerId || !start || !end) {
+      return respond(res, 400, { error: 'Chýbajú údaje' });
+    }
+    if (!publishedOpenDays(store).has(date)) return respond(res, 400, { error: 'Ten deň nie je v zverejnenom rozpise' });
+    if (hhmmToMinutes(end) <= hhmmToMinutes(start)) return respond(res, 400, { error: 'Koniec musí byť po začiatku' });
+
+    const worker = (store.workers || []).find((w) => w.id === workerId);
+    if (!worker) return respond(res, 404, { error: 'Brigádnik neexistuje' });
+    if (!(store.stations || []).some((s) => s.id === stationId)) {
+      return respond(res, 404, { error: 'Stanovisko neexistuje' });
+    }
+    const clash = (store.hourLogs || []).find(
+      (h) => h.date === date && h.stationId === stationId && h.workerId === workerId
+    );
+    if (clash) {
+      return respond(res, 400, {
+        error: `${worker.name} už má na ten deň a stanovisko zápis — schváľ ho v zozname namiesto pridávania nového.`,
+      });
+    }
+
+    const entry = {
+      id: generateToken(),
+      date,
+      stationId,
+      workerId: worker.id,
+      workerName: worker.name,
+      substituteFor: null,
+      substituteForName: null,
+      // Nobody reported: the worker's side of this record is genuinely empty.
+      reportedStart: null,
+      reportedEnd: null,
+      reportedAt: null,
+      status: 'approved',
+      approvedStart: start,
+      approvedEnd: end,
+      approvedBy: op.id,
+      approvedByName: op.name,
+      approvedAt: new Date().toISOString(),
+    };
+    auditStep(entry, { role: 'operator', name: op.name, action: 'created', start, end });
+
+    await mutateStore((s) => {
+      if (!s.hourLogs) s.hourLogs = [];
+      s.hourLogs.push(entry);
+    });
+    const fresh = await getStore();
+    return respond(res, 200, { ok: true, hourLogs: sanitizeHourLogsForOperator(fresh) });
   }
 
   // Operator — log their own hours. Not tied to a station: an operator runs the
@@ -1508,6 +1657,7 @@ async function handleRequest(req, res) {
       entry.approvedByName = op.name;
       entry.approvedAt = new Date().toISOString();
       entry.status = 'approved';
+      auditStep(entry, { role: 'operator', name: op.name, action: 'approved', start, end });
     });
 
     const fresh = await getStore();
@@ -1810,10 +1960,8 @@ async function handleRequest(req, res) {
       approvedBy: null,
       approvedByName: 'admin',
       approvedAt: new Date().toISOString(),
-      // These records settle pay disputes, so one the admin wrote rather than
-      // the worker and operator independently says so on its face.
-      createdByAdmin: true,
     };
+    auditStep(entry, { role: 'admin', name: 'admin', action: 'created', start, end });
     await mutateStore((s) => {
       if (!s.hourLogs) s.hourLogs = [];
       s.hourLogs.push(entry);
@@ -1858,8 +2006,7 @@ async function handleRequest(req, res) {
         if (!h.approvedAt) h.approvedAt = new Date().toISOString();
         if (!h.approvedByName) h.approvedByName = 'admin';
       }
-      h.editedByAdmin = true;
-      h.editedAt = new Date().toISOString();
+      auditStep(h, { role: 'admin', name: 'admin', action: 'edited', start: as || rs, end: ae || re });
     });
     return respond(res, 200, { ok: true });
   }
