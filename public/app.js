@@ -1288,6 +1288,10 @@
     const d = S.data;
     const calHtml = buildCalendar(d.periodStart, d.periodEnd, [...S.openDays], [], 'open-days');
     const sortedOpen = [...S.openDays].sort();
+    // Days left in the list by an earlier month. The calendar only draws the
+    // current period, so these are invisible there and cannot be unclicked.
+    const outsideDays = sortedOpen.filter(dt =>
+      (d.periodStart && dt < d.periodStart) || (d.periodEnd && dt > d.periodEnd));
 
     const dayRows = dayHoursRows(d.defaultOpensAt || '10:00', d.defaultClosesAt || '19:00');
 
@@ -1388,6 +1392,15 @@
 
       ${settingsSection('dni', 'Otvorené dni', `
         <p class="text-muted" style="margin-bottom:8px">Klikni na deň aby si ho otvoril / zatvoril.</p>
+        ${outsideDays.length ? `<div class="alert alert-warning" style="margin-bottom:10px">
+            <strong>${outsideDays.length} otvorených dní je mimo tohto obdobia</strong>
+            (${outsideDays.slice(0, 4).map(fmtShort).join(', ')}${outsideDays.length > 4 ? ' a ďalšie' : ''}).
+            Zostali tu po prepnutí mesiaca a patria inému obdobiu — v kalendári nižšie ich nevidíš,
+            lebo ten kreslí len ${esc(d.periodStart)} – ${esc(d.periodEnd)}. Nevygenerujú sa a brigádnici ich nevidia.
+            <div style="margin-top:8px">
+              <button class="btn btn-danger btn-sm" id="drop-outside" type="button">Odstrániť ${outsideDays.length} dní mimo obdobia</button>
+            </div>
+          </div>` : ''}
         ${calHtml}
         ${sortedOpen.length ? `
           <div class="section-title">Časy pre jednotlivé dni</div>
@@ -1492,6 +1505,21 @@
   }
 
   function attachSettings() {
+    document.getElementById('drop-outside')?.addEventListener('click', () => {
+      const from = S.data.periodStart, to = S.data.periodEnd;
+      const drop = [...S.openDays].filter(dt => (from && dt < from) || (to && dt > to)).sort();
+      if (!drop.length) return;
+      if (!confirm(
+        `Odstrániť ${drop.length} otvorených dní, ktoré sú mimo obdobia ${from} – ${to}?\n\n`
+        + drop.map(fmtShort).join(', ')
+        + `\n\nPatria inému obdobiu a v tomto sa nevygenerujú. Ich vlastný rozpis sa nezmaže —`
+        + ` odstraňujú sa len z tohto zoznamu. Ulož nastavenia, aby sa to prejavilo.`
+      )) return;
+      drop.forEach(dt => { S.openDays.delete(dt); delete S.daySettings[dt]; });
+      S.tab = 'settings'; renderPanel();
+      setMsg('set-msg', `<div class="alert alert-success">✓ Odstránených ${drop.length} dní mimo obdobia. Teraz ulož nastavenia.</div>`);
+    });
+
     document.getElementById('cfg-weekend')?.addEventListener('click', () => {
       const month = document.getElementById('cfg-month')?.value || S.data.month;
       const p = weekendPeriodFor(month);
