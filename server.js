@@ -873,7 +873,7 @@ async function exportActualHoursXLSX(store) {
       `${log.reportedStart}–${log.reportedEnd}`,
       `${log.approvedStart}–${log.approvedEnd}`,
       Number((approvedH - reportedH).toFixed(1)),
-      log.approvedByName || '',
+      (log.approvedByName || '') + (log.createdByAdmin ? ' (pridal admin)' : log.editedByAdmin ? ' (upravil admin)' : ''),
     ]);
   }
   wsDisc.columns.forEach((col) => { col.width = 20; });
@@ -1764,6 +1764,103 @@ async function handleRequest(req, res) {
     await mutateStore((s) => { s.hourLogs = (s.hourLogs || []).filter((h) => h.id !== delHourM[1]); });
     const after = (await getStore()).hourLogs?.length || 0;
     if (before === after) return respond(res, 404, { error: 'Záznam neexistuje' });
+    return respond(res, 200, { ok: true });
+  }
+
+  // Admin — add an hour log by hand, for a shift nobody logged: someone forgot
+  // and said so days later, or an operator was not there to approve it. Both
+  // times are set at once and it is final — sending it to an operator to
+  // approve would mean approving blind something they were not present for.
+  if (req.method === 'POST' && p === '/api/hour-logs') {
+    if (!requireAdmin(req, res)) return;
+    const body = await parseBody(req);
+    const store = await getStore();
+    const { date, start, end, stationId } = body;
+    const personType = body.personType === 'operator' ? 'operator' : 'worker';
+    const personId = body.personId;
+
+    if (!date || !start || !end || !personId) return respond(res, 400, { error: 'Chýbajú údaje' });
+    if (hhmmToMinutes(end) <= hhmmToMinutes(start)) {
+      return respond(res, 400, { error: 'Koniec musí byť po začiatku' });
+    }
+    const person = personType === 'operator'
+      ? (store.operators || []).find((o) => o.id === personId)
+      : (store.workers || []).find((w) => w.id === personId);
+    if (!person) return respond(res, 404, { error: 'Taká osoba neexistuje' });
+    if (personType === 'worker' && !stationId) return respond(res, 400, { error: 'Vyber stanovisko' });
+    if (stationId && !(store.stations || []).some((s) => s.id === stationId)) {
+      return respond(res, 404, { error: 'Stanovisko neexistuje' });
+    }
+
+    const entry = {
+      id: generateToken(),
+      personType,
+      date,
+      stationId: personType === 'operator' ? null : stationId,
+      workerId: person.id,
+      workerName: person.name,
+      substituteFor: null,
+      substituteForName: null,
+      reportedStart: start,
+      reportedEnd: end,
+      reportedAt: new Date().toISOString(),
+      status: 'approved',
+      approvedStart: start,
+      approvedEnd: end,
+      approvedBy: null,
+      approvedByName: 'admin',
+      approvedAt: new Date().toISOString(),
+      // These records settle pay disputes, so one the admin wrote rather than
+      // the worker and operator independently says so on its face.
+      createdByAdmin: true,
+    };
+    await mutateStore((s) => {
+      if (!s.hourLogs) s.hourLogs = [];
+      s.hourLogs.push(entry);
+    });
+    return respond(res, 200, { ok: true, id: entry.id });
+  }
+
+  // Admin — correct an hour log. Both figures can be changed: the approved one
+  // decides pay, and the reported one sometimes holds a typo the worker asked
+  // to have fixed. Every edit is stamped, because a record that can be
+  // rewritten silently is worth nothing as evidence.
+  const editHourM = p.match(/^\/api\/hour-logs\/([^/]+)$/);
+  if (editHourM && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return;
+    const body = await parseBody(req);
+    const store = await getStore();
+    const existing = (store.hourLogs || []).find((h) => h.id === editHourM[1]);
+    if (!existing) return respond(res, 404, { error: 'Záznam neexistuje' });
+
+    const pick = (next, prev) => (next === undefined || next === null || next === '' ? prev : next);
+    const rs = pick(body.reportedStart, existing.reportedStart);
+    const re = pick(body.reportedEnd, existing.reportedEnd);
+    const as = pick(body.approvedStart, existing.approvedStart);
+    const ae = pick(body.approvedEnd, existing.approvedEnd);
+
+    if (rs && re && hhmmToMinutes(re) <= hhmmToMinutes(rs)) {
+      return respond(res, 400, { error: 'Nahlásený koniec musí byť po začiatku' });
+    }
+    if (as && ae && hhmmToMinutes(ae) <= hhmmToMinutes(as)) {
+      return respond(res, 400, { error: 'Schválený koniec musí byť po začiatku' });
+    }
+
+    await mutateStore((s) => {
+      const h = (s.hourLogs || []).find((x) => x.id === editHourM[1]);
+      if (!h) return;
+      h.reportedStart = rs;
+      h.reportedEnd = re;
+      h.approvedStart = as;
+      h.approvedEnd = ae;
+      if (as && ae) {
+        h.status = 'approved';
+        if (!h.approvedAt) h.approvedAt = new Date().toISOString();
+        if (!h.approvedByName) h.approvedByName = 'admin';
+      }
+      h.editedByAdmin = true;
+      h.editedAt = new Date().toISOString();
+    });
     return respond(res, 200, { ok: true });
   }
 

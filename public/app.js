@@ -2314,21 +2314,34 @@
     const hourOpen = (ym) => !multiMonth || S.openHourMonths.has(ym);
     let lastMonth = null;
 
+    const personOpts = [
+      ...(d.workers || []).map(w => `<option value="worker:${esc(w.id)}">${esc(w.name)}</option>`),
+      ...(d.operators || []).map(o => `<option value="operator:${esc(o.id)}">${esc(o.name)} (prevádzkar)</option>`),
+    ].join('');
+    const stationOpts = (d.stations || []).map(s2 => `<option value="${esc(s2.id)}">${esc(s2.name)}</option>`).join('');
+
     const detailRows = [...logs]
       .sort((a, b) => b.date.localeCompare(a.date))
       .map(h => {
+        // A record the admin wrote or rewrote says so, so it is never mistaken
+        // for two people having independently arrived at the same figure.
+        const adminMark = h.createdByAdmin
+          ? ' <span class="badge badge-info" style="font-size:.66rem">pridal admin</span>'
+          : (h.editedByAdmin ? ' <span class="badge badge-warning" style="font-size:.66rem">upravil admin</span>' : '');
         // An operator's own hours sit on no station and nobody approved them.
         const isOp = h.personType === 'operator';
         const stn = isOp
           ? '<span class="text-muted">celá prevádzka</span>'
           : esc(stationMap.get(h.stationId) || h.stationId);
         const who = isOp
-          ? `${esc(h.workerName)} <span class="badge badge-info" style="font-size:.68rem">prevádzkar</span>`
+          ? `${esc(h.workerName)} <span class="badge badge-info" style="font-size:.68rem">prevádzkar</span>${adminMark}`
           : (h.substituteFor
-            ? `${esc(h.workerName)} <span class="text-muted" style="font-size:.76rem">(za ${esc(h.substituteForName||'?')})</span>`
-            : esc(h.workerName));
+            ? `${esc(h.workerName)} <span class="text-muted" style="font-size:.76rem">(za ${esc(h.substituteForName||'?')})</span>${adminMark}`
+            : esc(h.workerName) + adminMark);
+        const editBtn = `<button class="btn btn-secondary btn-sm edit-hour" data-id="${esc(h.id)}" title="Upraviť časy">✎</button>`;
         const delBtn = `<button class="btn btn-danger btn-sm del-hour" data-id="${esc(h.id)}"
           data-who="${esc(h.workerName)}" data-date="${fmtShort(h.date)}" title="Zmazať záznam">×</button>`;
+        const actions = `<div style="display:flex;gap:4px">${editBtn}${delBtn}</div>`;
 
         const ym = h.date.slice(0, 7);
         const open = hourOpen(ym);
@@ -2349,7 +2362,7 @@
             <td>${fmtShort(h.date)}</td><td>${stn}</td><td>${who}</td>
             <td>${esc(h.reportedStart)}–${esc(h.reportedEnd)}</td>
             <td><span class="badge badge-warning">⏳ Čaká</span></td>
-            <td>—</td><td>—</td><td>${delBtn}</td>
+            <td>—</td><td>—</td><td>${actions}</td>
           </tr>`;
         }
         const mismatch = (h.reportedStart !== h.approvedStart || h.reportedEnd !== h.approvedEnd);
@@ -2364,7 +2377,7 @@
               ? `<span class="badge badge-danger">⚠ Nezhoda ${diffH > 0 ? '+' : ''}${diffH.toFixed(1)} h</span>`
               : '<span class="badge badge-success">✓ Zhoda</span>')}</td>
           <td class="text-muted" style="font-size:.8rem">${esc(h.approvedByName || '')}</td>
-          <td>${delBtn}</td>
+          <td>${actions}</td>
         </tr>`;
       }).join('');
 
@@ -2386,6 +2399,38 @@
       </div>
 
       <div class="card">
+        <div class="section-title">Pridať zápis ručne</div>
+        <p class="text-muted" style="margin-bottom:10px;font-size:.84rem">
+          Pre zmenu, ktorú nikto nezapísal — niekto zabudol a ozval sa neskôr, alebo pri tom nebol prevádzkar.
+          Zápis je hneď platný a v zozname bude označený ako tvoj.
+        </p>
+        <div class="form-row" style="align-items:flex-end">
+          <div class="form-group" style="max-width:220px">
+            <label>Kto</label>
+            <select id="nh-person">${personOpts}</select>
+          </div>
+          <div class="form-group" style="max-width:170px">
+            <label>Dátum</label>
+            <input type="date" id="nh-date" value="${esc(localTodayISO())}">
+          </div>
+          <div class="form-group" style="max-width:190px">
+            <label>Stanovisko</label>
+            <select id="nh-station">${stationOpts}</select>
+          </div>
+          <div class="form-group" style="max-width:120px">
+            <label>Od</label>${timeInputHTML('nh-start', '', d.defaultOpensAt || '10:00', 'width:100px')}
+          </div>
+          <div class="form-group" style="max-width:120px">
+            <label>Do</label>${timeInputHTML('nh-end', '', d.defaultClosesAt || '19:00', 'width:100px')}
+          </div>
+          <div class="form-group" style="flex:none">
+            <button class="btn btn-primary" id="nh-add">Pridať zápis</button>
+          </div>
+        </div>
+        <div id="nh-msg"></div>
+      </div>
+
+      <div class="card">
         <div class="section-title">Detail všetkých záznamov</div>
         <p class="text-muted" style="margin-bottom:10px;font-size:.84rem">Nezhoda znamená, že prevádzkar schválil iný čas, než brigádnik nahlásil. Prevádzkar nahlásený čas nevidí — schvaľuje nezávisle.</p>
         <div style="overflow-x:auto">
@@ -2398,7 +2443,93 @@
       </div>`;
   }
 
+  function openHourEditDialog(id) {
+    const h = (S.data.hourLogs || []).find(x => x.id === id);
+    if (!h) return;
+    const stn = (S.data.stations || []).find(s => s.id === h.stationId);
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(12,35,114,0.45);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px';
+    overlay.innerHTML = `
+      <div class="card" style="max-width:430px;width:100%;margin:0">
+        <div class="section-title">Upraviť zápis</div>
+        <p class="text-muted" style="margin-bottom:14px;font-size:.86rem">
+          <strong>${esc(h.workerName)}</strong> — ${fmtFull(h.date)}${stn ? ` · ${esc(stn.name)}` : ''}
+        </p>
+        <div class="form-row">
+          <div class="form-group" style="max-width:120px">
+            <label>Nahlásil od</label>${timeInputHTML('eh-rs', '', h.reportedStart || '', 'width:100px')}
+          </div>
+          <div class="form-group" style="max-width:120px">
+            <label>Nahlásil do</label>${timeInputHTML('eh-re', '', h.reportedEnd || '', 'width:100px')}
+          </div>
+        </div>
+        <p class="text-muted" style="font-size:.78rem;margin:-6px 0 12px">Čo zapísal brigádnik. Meň len pri preklepe, o ktorý sám požiadal.</p>
+        <div class="form-row">
+          <div class="form-group" style="max-width:120px">
+            <label>Schválené od</label>${timeInputHTML('eh-as', '', h.approvedStart || '', 'width:100px')}
+          </div>
+          <div class="form-group" style="max-width:120px">
+            <label>Schválené do</label>${timeInputHTML('eh-ae', '', h.approvedEnd || '', 'width:100px')}
+          </div>
+        </div>
+        <p class="text-muted" style="font-size:.78rem;margin:-6px 0 12px">Toto číslo ide do výplaty.</p>
+        <div id="eh-msg" style="margin-bottom:10px"></div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button class="btn btn-primary" id="eh-ok" style="width:100%">Uložiť</button>
+          <button class="btn btn-secondary" id="eh-cancel" style="width:100%">Zrušiť</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.querySelector('#eh-cancel').addEventListener('click', close);
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+    overlay.querySelector('#eh-ok').addEventListener('click', async () => {
+      const btn = overlay.querySelector('#eh-ok');
+      btn.disabled = true; btn.textContent = 'Ukladám…';
+      try {
+        await api('PUT', `/api/hour-logs/${id}`, {
+          reportedStart: overlay.querySelector('.eh-rs')?.value,
+          reportedEnd: overlay.querySelector('.eh-re')?.value,
+          approvedStart: overlay.querySelector('.eh-as')?.value,
+          approvedEnd: overlay.querySelector('.eh-ae')?.value,
+        });
+        S.data = await api('GET', '/api/admin');
+        syncLocal(); close(); S.tab = 'hodiny'; renderPanel();
+        setMsg('hour-msg', '<div class="alert alert-success">✓ Zápis upravený — v zozname je označený ako upravený tebou.</div>');
+      } catch (e) {
+        overlay.querySelector('#eh-msg').innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+        btn.disabled = false; btn.textContent = 'Uložiť';
+      }
+    });
+  }
+
   function attachAdminHours() {
+    document.querySelectorAll('.edit-hour').forEach(btn => {
+      btn.addEventListener('click', () => openHourEditDialog(btn.dataset.id));
+    });
+
+    document.getElementById('nh-add')?.addEventListener('click', async () => {
+      const btn = document.getElementById('nh-add');
+      const [personType, personId] = (document.getElementById('nh-person')?.value || '').split(':');
+      const date = document.getElementById('nh-date')?.value;
+      const stationId = document.getElementById('nh-station')?.value;
+      const start = document.querySelector('.nh-start')?.value;
+      const end = document.querySelector('.nh-end')?.value;
+      if (!personId || !date) { setMsg('nh-msg', '<div class="alert alert-error">Vyber osobu a dátum.</div>'); return; }
+      btn.disabled = true;
+      try {
+        await api('POST', '/api/hour-logs', { personType, personId, date, stationId, start, end });
+        S.data = await api('GET', '/api/admin');
+        syncLocal(); S.tab = 'hodiny'; renderPanel();
+        setMsg('hour-msg', '<div class="alert alert-success">✓ Zápis pridaný a rovno platný.</div>');
+      } catch (e) {
+        setMsg('nh-msg', `<div class="alert alert-error">${esc(e.message)}</div>`);
+        btn.disabled = false;
+      }
+    });
+
     document.querySelectorAll('.hour-head[data-hourmonth]').forEach(head => {
       head.addEventListener('click', () => {
         const ym = head.dataset.hourmonth;
