@@ -578,7 +578,7 @@
     const sched = d.schedule || {};
 
     const thead = `<tr><th>Dátum</th>${stations.map(s => `<th>${esc(s.name)}</th>`).join('')}<th>Voľní</th></tr>`;
-    const opDiv = monthDividers(openDays, stations.length + 2);
+    const opDiv = monthDividers(openDays, stations.length + 2, (dt) => (d.monthOfDay || {})[dt] || dt.slice(0, 7));
     const tbody = openDays.map(date => {
       const cells = stations.map(st => {
         const cell = sched[date]?.[st.id] || {};
@@ -1077,17 +1077,22 @@
   //
   // Only when there is more than one month: a single month has nothing to be
   // chosen between, and hiding it behind a click would just be in the way.
-  function monthDividers(dates, colspan) {
-    const months = [...new Set(dates.map(d => d.slice(0, 7)))];
+  function monthDividers(dates, colspan, periodOf) {
+    // Grouped by the period a day belongs to, not by the month its date falls
+    // in. A period runs Friday to Sunday across the turn of the month, so
+    // October's roster ends on the 1st of November — splitting that off under
+    // its own heading breaks one weekend, and one period, in half.
+    const keyOf = periodOf || ((d) => d.slice(0, 7));
+    const months = [...new Set(dates.map(keyOf))];
     if (months.length < 2) {
       return { header: () => '', rowAttrs: () => '' };
     }
-    const counts = new Map(months.map(m => [m, dates.filter(d => d.startsWith(m)).length]));
+    const counts = new Map(months.map(m => [m, dates.filter(d => keyOf(d) === m).length]));
     const isOpen = (ym) => S.openMonths.has(ym);
     let last = null;
     return {
       header(date) {
-        const ym = date.slice(0, 7);
+        const ym = keyOf(date);
         if (ym === last) return '';
         last = ym;
         const open = isOpen(ym);
@@ -1102,7 +1107,7 @@
         </tr>`;
       },
       rowAttrs(date) {
-        const ym = date.slice(0, 7);
+        const ym = keyOf(date);
         return ` data-month="${esc(ym)}"${isOpen(ym) ? '' : ' class="row-collapsed"'}`;
       },
     };
@@ -1200,9 +1205,11 @@
     const d = S.data;
     const from = d.periodStart || '';
     const to = d.periodEnd || '';
+    // Same rule as the schedule: the period is the group, not the calendar
+    // month, so a period ending on the 1st is not split off on its own.
     const byMonth = new Map();
     for (const date of [...S.openDays].sort()) {
-      const ym = date.slice(0, 7);
+      const ym = (from && to && date >= from && date <= to) ? (d.month || date.slice(0, 7)) : date.slice(0, 7);
       if (!byMonth.has(ym)) byMonth.set(ym, []);
       byMonth.get(ym).push(date);
     }
@@ -1906,7 +1913,7 @@
       <th>Voľní</th>
     </tr>`;
 
-    const admDiv = monthDividers(openDays, stations.length + 2);
+    const admDiv = monthDividers(openDays, stations.length + 2, () => d.month);
     const tbody = openDays.map(date => {
       // Ensure schedEdits for this date is initialized
       if (!S.schedEdits[date]) S.schedEdits[date] = {};

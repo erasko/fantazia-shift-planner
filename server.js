@@ -1516,6 +1516,12 @@ async function handleRequest(req, res) {
       openDays: [...publishedOpenDays(store)].sort(),
       schedule: operatorScheduleView(store),
       freeWorkers: operatorFreeWorkers(store),
+      // Which period each open day belongs to. A period can cross the turn of
+      // the month, so the date alone does not say which roster it is part of.
+      monthOfDay: Object.fromEntries(
+        (store.publishedMonths || []).flatMap((m) =>
+          (periodFor(store, m).openDays || []).map((dt) => [dt, m]))
+      ),
       // Names only — an operator already sees these on the roster, but their
       // personal links are what gets a worker into the app and stay out.
       workers: (store.workers || []).map((w) => ({ id: w.id, name: w.name })),
