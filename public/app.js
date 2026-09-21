@@ -2105,7 +2105,18 @@
       btn.disabled = true; btn.textContent = 'Generujem...';
       try {
         S.data = await api('PUT', '/api/schedule', { discardManual });
+        const skipped = S.data.skippedDays || [];
         syncLocal(); S.tab = 'schedule'; renderPanel();
+        // Days outside the period are deliberately left alone. Unexplained,
+        // that is indistinguishable from the generator simply not working.
+        setMsg('sched-msg', skipped.length
+          ? `<div class="alert alert-warning">
+               <strong>Rozpis vygenerovaný, ale ${skipped.length} ${skipped.length === 1 ? 'otvorený deň ostal' : (skipped.length < 5 ? 'otvorené dni ostali' : 'otvorených dní ostalo')} prázdny.</strong><br>
+               ${skipped.map(fmtShort).join(', ')} ${skipped.length === 1 ? 'je' : 'sú'} mimo obdobia
+               <strong>${esc(S.data.periodStart)} – ${esc(S.data.periodEnd)}</strong>.
+               Brigádnici ich tiež nevidia. Uprav koniec obdobia v Nastaveniach a vygeneruj znova.
+             </div>`
+          : '<div class="alert alert-success">✓ Rozpis vygenerovaný.</div>');
       } catch (e) {
         setMsg('sched-msg', `<div class="alert alert-error">Chyba: ${esc(e.message)}</div>`);
         btn.disabled = false; btn.textContent = '⟳ Generovať rozpis';

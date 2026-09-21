@@ -1760,7 +1760,14 @@ async function handleRequest(req, res) {
         s.manualAssignments[s.month] = {};
       }
     });
-    return respond(res, 200, adminView(await getStore()));
+    const after = await getStore();
+    // An open day outside the period is skipped — that is what stops one
+    // month's days being filed under another. But skipping it in silence looks
+    // exactly like the generator being broken, so say which days and why.
+    const skipped = (after.openDays || [])
+      .filter((d) => !inPeriod(after, after.month, d))
+      .sort();
+    return respond(res, 200, { ...adminView(after), skippedDays: skipped });
   }
 
   // Admin — manual assignments
