@@ -478,11 +478,12 @@ function generateSchedule(store) {
   const assignments = {};
   const assignedOnDay = {};
 
-  // Only days belonging to the month being generated. The flat open days
-  // describe the month the admin is editing; the result is filed under
-  // store.month. Generating while those disagree used to write one month's
-  // days into another month's key.
-  const days = [...store.openDays].filter((d) => d.startsWith(store.month)).sort();
+  // Only days inside the period being generated. The flat open days describe
+  // the month the admin is editing and the result is filed under store.month,
+  // so generating while those disagree used to write one month's days into
+  // another month's key. Tested against the period rather than the month's
+  // name, because a period may legitimately run past the turn of the month.
+  const days = [...store.openDays].filter((d) => inPeriod(store, store.month, d)).sort();
 
   for (const date of days) {
     assignments[date] = {};
@@ -548,10 +549,26 @@ function effectiveSchedule(store, month = store.month) {
 //
 // Every reader goes through here so a stray date is invisible everywhere,
 // rather than in some views and not others.
+// A date belongs to a month when it falls inside that month's planning period,
+// not when its name starts with the month. A period is allowed to cross the
+// boundary — October's roster running to the 1st of November — and testing the
+// name silently dropped every day past the turn of the month, so the schedule
+// would not generate for them and workers would not see them.
+//
+// Falls back to the name only when a month has no period recorded at all,
+// which is the one case with nothing better to go on.
+function inPeriod(store, month, date) {
+  const p = periodFor(store, month);
+  if (!p.periodStart && !p.periodEnd) return date.startsWith(month);
+  if (p.periodStart && date < p.periodStart) return false;
+  if (p.periodEnd && date > p.periodEnd) return false;
+  return true;
+}
+
 function scheduledDates(store, month) {
   const open = new Set(periodFor(store, month).openDays || []);
   return Object.keys(effectiveSchedule(store, month))
-    .filter((date) => date.startsWith(month) && open.has(date))
+    .filter((date) => open.has(date) && inPeriod(store, month, date))
     .sort();
 }
 
@@ -1637,7 +1654,7 @@ async function handleRequest(req, res) {
     if (outId === inId) return respond(res, 400, { error: 'Vyber dvoch rôznych ľudí' });
 
     const month = store.month;
-    if (!date.startsWith(month) || !(store.openDays || []).includes(date)) {
+    if (!inPeriod(store, month, date) || !(store.openDays || []).includes(date)) {
       return respond(res, 400, { error: 'Ten deň nie je otvorený v tomto mesiaci' });
     }
     const station = (store.stations || []).find((s) => s.id === stationId);
