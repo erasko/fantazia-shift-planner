@@ -1084,9 +1084,7 @@
     // its own heading breaks one weekend, and one period, in half.
     const keyOf = periodOf || periodOfDate;
     const months = [...new Set(dates.map(keyOf))];
-    if (months.length < 2) {
-      return { header: () => '', rowAttrs: () => '' };
-    }
+    if (!months.length) return { header: () => '', rowAttrs: () => '' };
     const counts = new Map(months.map(m => [m, dates.filter(d => keyOf(d) === m).length]));
     const isOpen = (ym) => S.openMonths.has(ym);
     let last = null;
@@ -2471,9 +2469,12 @@
     // Records pile up all season and it is nearly always the current month you
     // want, so the detail folds by month with that one open.
     const logMonths = [...new Set(logs.map(h => periodOfDate(h.date)))].sort().reverse();
-    const multiMonth = logMonths.length > 1;
-    if (multiMonth && !S.openHourMonths) S.openHourMonths = new Set([logMonths[0]]);
-    const hourOpen = (ym) => !multiMonth || S.openHourMonths.has(ym);
+    // Foldable even when there is only one period: the list runs to hundreds of
+    // rows by the end of a season, and a single group still buries everything
+    // under it. The newest period starts open, the rest closed.
+    const multiMonth = logMonths.length > 0;
+    if (!S.openHourMonths) S.openHourMonths = new Set(logMonths.slice(0, 1));
+    const hourOpen = (ym) => S.openHourMonths.has(ym);
     let lastMonth = null;
 
     const personOpts = [
