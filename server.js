@@ -556,7 +556,7 @@ function generateSchedule(store) {
   // so generating while those disagree used to write one month's days into
   // another month's key. Tested against the period rather than the month's
   // name, because a period may legitimately run past the turn of the month.
-  const days = [...store.openDays].filter((d) => inPeriod(store, store.month, d)).sort();
+  const days = periodDays(store);
 
   for (const date of days) {
     assignments[date] = {};
@@ -636,6 +636,13 @@ function inPeriod(store, month, date) {
   if (p.periodStart && date < p.periodStart) return false;
   if (p.periodEnd && date > p.periodEnd) return false;
   return true;
+}
+
+// The open days of the period being exported. The flat list can still hold
+// days left behind by an earlier month; an export that takes it whole runs two
+// rosters together and titles them both after whichever came first.
+function periodDays(store, month = store.month) {
+  return (store.openDays || []).filter((d) => inPeriod(store, month, d)).sort();
 }
 
 function scheduledDates(store, month) {
@@ -896,7 +903,7 @@ async function exportActualHoursXLSX(store) {
   const wb = new ExcelJS.Workbook();
   const logs = store.hourLogs || [];
   const approvedLogs = logs.filter((h) => h.status === 'approved');
-  const sortedDays = [...store.openDays].sort();
+  const sortedDays = periodDays(store);
 
   const ws = wb.addWorksheet('Hodiny');
   const headerRow = ['Brigádnik', ...sortedDays.map((d) => d.slice(8, 10) + '.' + d.slice(5, 7) + '.'), 'Spolu'];
@@ -1004,7 +1011,7 @@ function exportScheduleCSV(store) {
   const sched = effectiveSchedule(store);
   const workerMap = new Map(store.workers.map((w) => [w.id, w.name]));
   const lines = ['Dátum,Stanovisko,Čas,Brigádnici'];
-  for (const date of [...store.openDays].sort()) {
+  for (const date of periodDays(store)) {
     const dayOv = store.daySettings?.[date]?.stationOverrides || {};
     for (const station of store.stations) {
       const ov = dayOv[station.id];
@@ -1033,7 +1040,7 @@ async function exportScheduleXLSX(store) {
   ws.getRow(1).font = { bold: true };
   ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6B35' } };
 
-  for (const date of [...store.openDays].sort()) {
+  for (const date of periodDays(store)) {
     const dayOv = store.daySettings?.[date]?.stationOverrides || {};
     for (const station of store.stations) {
       const ov = dayOv[station.id];
@@ -1081,7 +1088,7 @@ function exportSchedulePrintHTML(store) {
   const DAY_SK = ['Nedeľa','Pondelok','Utorok','Streda','Štvrtok','Piatok','Sobota'];
   const MONTH_SK = ['január','február','marec','apríl','máj','jún','júl','august','september','október','november','december'];
 
-  const sortedDays = [...store.openDays].sort();
+  const sortedDays = periodDays(store);
   if (!sortedDays.length) return '<p>Žiadne otvorené dni.</p>';
 
   // Group by ISO week (Mon=start)
@@ -1107,8 +1114,11 @@ function exportSchedulePrintHTML(store) {
     return DAY_SK[d.getDay()];
   }
 
-  const firstDay = new Date(sortedDays[0] + 'T12:00:00');
-  const monthLabel = `${MONTH_SK[firstDay.getMonth()].toUpperCase()} ${firstDay.getFullYear()}`;
+  // Named after the period being exported, not after whichever day happens to
+  // sort first — a period runs past the turn of the month, and a leftover day
+  // from an earlier one would otherwise put the wrong month on every page.
+  const [pyear, pmonth] = String(store.month || sortedDays[0].slice(0, 7)).split('-').map(Number);
+  const monthLabel = `${MONTH_SK[(pmonth || 1) - 1].toUpperCase()} ${pyear}`;
 
   let pages = '';
   let pageNum = 1;
@@ -2187,7 +2197,7 @@ async function handleRequest(req, res) {
     }
 
     const schedLines = [];
-    for (const date of [...store.openDays].sort()) {
+    for (const date of periodDays(store)) {
       for (const st of store.stations) {
         const wids = sched[date]?.[st.id] || [];
         schedLines.push(`${date} | ${st.name}: ${wids.map(id => workerMap.get(id) || id).join(', ') || '—'}`);
