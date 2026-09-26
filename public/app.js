@@ -1199,8 +1199,17 @@
   function periodOfDate(date) {
     const d = S.data || {};
     if (d.monthOfDay && d.monthOfDay[date]) return d.monthOfDay[date];
-    if (d.month && (d.openDays || []).includes(date)) return d.month;
+
+    // Inside the period being edited — the range decides, not membership of
+    // the open-days list. Days left behind by an earlier month are still in
+    // that list, and claiming them for the current month merged two rosters
+    // into one.
+    const within = (from, to) => (!from || date >= from) && (!to || date <= to);
+    if (d.month && (d.periodStart || d.periodEnd) && within(d.periodStart, d.periodEnd)) {
+      return d.month;
+    }
     for (const [m, p] of Object.entries(d.periods || {})) {
+      if ((p.periodStart || p.periodEnd) && within(p.periodStart, p.periodEnd)) return m;
       if ((p.openDays || []).includes(date)) return m;
     }
     return date.slice(0, 7);
@@ -1930,7 +1939,10 @@
       <th>Voľní</th>
     </tr>`;
 
-    const admDiv = monthDividers(openDays, stations.length + 2, () => d.month);
+    // Ask which period each day belongs to. Forcing every row to the month
+    // being edited put days left over from an earlier month under this
+    // month's heading, merging two rosters into one.
+    const admDiv = monthDividers(openDays, stations.length + 2, periodOfDate);
     const tbody = openDays.map(date => {
       // Ensure schedEdits for this date is initialized
       if (!S.schedEdits[date]) S.schedEdits[date] = {};
