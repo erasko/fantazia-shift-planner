@@ -305,6 +305,22 @@
     }
 
     // Substitution — worker reports hours for someone else's shift (today only)
+    // Once availability is locked there is nothing to do in that calendar, and
+    // it fills a phone screen on its own — which put the roster, the thing a
+    // worker opens the link for, below the fold and looking absent. While it is
+    // still open for editing it stays first, because then it is the task.
+    const availabilityCard = `<div class="card">
+          <div class="section-title">Moja dostupnosť — ${esc(d.month)}${locked ? ' (uzamknutá)' : ''}</div>
+          ${!locked ? `<p class="text-muted" style="margin-bottom:10px">Klikni na deň keď <strong>NEMÔŽEŠ</strong> pracovať (červená). Ostatné dni = dostupný.</p>` : ''}
+          ${calHtml}
+          ${d.submittedAt ? `<p class="text-muted" style="margin-top:8px">Naposledy odoslané: ${fmtDateTime(d.submittedAt)}</p>` : ''}
+          ${!locked ? `
+            <div class="actions">
+              <button class="btn btn-primary" id="sub-btn">Odoslať dostupnosť</button>
+            </div>
+            <div id="sub-msg" style="margin-top:8px"></div>` : ''}
+        </div>`;
+
     let subHtml = '';
     if (published && d.fullSchedule) {
       const today = localTodayISO();
@@ -366,19 +382,8 @@
       </div>
       <div class="container">
         ${noticeHtml}
-        <div class="card">
-          <div class="section-title">Moja dostupnosť — ${esc(d.month)}${locked ? ' (uzamknutá)' : ''}</div>
-          ${!locked ? `<p class="text-muted" style="margin-bottom:10px">Klikni na deň keď <strong>NEMÔŽEŠ</strong> pracovať (červená). Ostatné dni = dostupný.</p>` : ''}
-          ${calHtml}
-          ${d.submittedAt ? `<p class="text-muted" style="margin-top:8px">Naposledy odoslané: ${fmtDateTime(d.submittedAt)}</p>` : ''}
-          ${!locked ? `
-            <div class="actions">
-              <button class="btn btn-primary" id="sub-btn">Odoslať dostupnosť</button>
-            </div>
-            <div id="sub-msg" style="margin-top:8px"></div>` : ''}
-        </div>
-        ${schedHtml}
-        ${subHtml}
+        ${locked ? schedHtml + subHtml : availabilityCard}
+        ${locked ? availabilityCard : schedHtml + subHtml}
         ${crHtml}
       </div>`;
 
