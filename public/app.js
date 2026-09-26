@@ -287,21 +287,47 @@
     let schedHtml = '';
     if (published) {
       const shifts = d.confirmedSchedule || [];
-      const schedMonths = [...new Set(shifts.map(s => s.month).filter(Boolean))];
-      const monthLabel = schedMonths.length ? ` — ${schedMonths.map(esc).join(', ')}` : '';
-      schedHtml = `<div class="card"><div class="section-title">Tvoj rozpis${monthLabel}</div>${
-        shifts.length === 0
-          ? '<p class="text-muted">V tomto období nemáš žiadne pridelené zmeny.</p>'
-          : `<ul class="shifts-list">${shifts.map(s => `
+      // A worker sees every published period at once, which after a month or
+      // two is a long run of shifts with nothing to say where one roster ends.
+      // Split by period, and fold the older ones away — the shift being looked
+      // for is almost always in the newest.
+      const byMonth = new Map();
+      for (const sh of shifts) {
+        const m = sh.month || sh.date.slice(0, 7);
+        if (!byMonth.has(m)) byMonth.set(m, []);
+        byMonth.get(m).push(sh);
+      }
+      const monthsDesc = [...byMonth.keys()].sort().reverse();
+      if (!S.openShiftMonths) S.openShiftMonths = new Set(monthsDesc.slice(0, 1));
+
+      const shiftLi = (sh) => `
               <li class="shift-item" style="flex-direction:column;align-items:flex-start">
                 <div style="display:flex;align-items:center;gap:12px;width:100%">
-                  <span class="shift-date">${fmtShort(s.date)}</span>
-                  <span class="shift-stn">${esc(s.stationName)}</span>
-                  <span class="shift-time">${esc(s.opensAt)}–${esc(s.closesAt)}</span>
+                  <span class="shift-date">${fmtShort(sh.date)}</span>
+                  <span class="shift-stn">${esc(sh.stationName)}</span>
+                  <span class="shift-time">${esc(sh.opensAt)}–${esc(sh.closesAt)}</span>
                 </div>
-                ${buildShiftHoursBlock(s)}
-              </li>`).join('')}</ul>`
-      }</div>`;
+                ${buildShiftHoursBlock(sh)}
+              </li>`;
+
+      let body;
+      if (!shifts.length) {
+        body = '<p class="text-muted">V tomto období nemáš žiadne pridelené zmeny.</p>';
+      } else if (byMonth.size === 1) {
+        body = `<ul class="shifts-list">${[...byMonth.values()][0].map(shiftLi).join('')}</ul>`;
+      } else {
+        body = [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([m, list]) => {
+          const open = S.openShiftMonths.has(m);
+          return `<div class="shift-month" data-shiftmonth="${esc(m)}"
+                    style="background:var(--brand-navy);color:#fff;font-weight:700;padding:9px 12px;border-radius:8px;margin:10px 0 6px;cursor:pointer;user-select:none">
+                    <span class="chev">${open ? '▾' : '▸'}</span> ${esc(monthLabel(m))}
+                    <span style="font-weight:400;opacity:.8">— ${list.length} ${list.length === 1 ? 'zmena' : (list.length < 5 ? 'zmeny' : 'zmien')}</span>
+                  </div>
+                  <ul class="shifts-list" data-shiftmonth="${esc(m)}"${open ? '' : ' style="display:none"'}>${list.map(shiftLi).join('')}</ul>`;
+        }).join('');
+      }
+
+      schedHtml = `<div class="card"><div class="section-title">Tvoj rozpis</div>${body}</div>`;
     }
 
     // Substitution — worker reports hours for someone else's shift (today only)
@@ -386,6 +412,15 @@
         ${locked ? availabilityCard : schedHtml + subHtml}
         ${crHtml}
       </div>`;
+
+    app.querySelectorAll('.shift-month[data-shiftmonth]').forEach(head => {
+      head.addEventListener('click', () => {
+        const m = head.dataset.shiftmonth;
+        if (S.openShiftMonths.has(m)) S.openShiftMonths.delete(m);
+        else S.openShiftMonths.add(m);
+        renderWorkerMain();
+      });
+    });
 
     // Calendar click handler
     if (!locked) {
