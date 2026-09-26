@@ -1120,6 +1120,28 @@ function exportSchedulePrintHTML(store) {
   const [pyear, pmonth] = String(store.month || sortedDays[0].slice(0, 7)).split('-').map(Number);
   const monthLabel = `${MONTH_SK[(pmonth || 1) - 1].toUpperCase()} ${pyear}`;
 
+  // A day opened after the roster was generated prints as a row of blank
+  // cells, which reads as a broken export rather than as work still to do.
+  const emptyDays = sortedDays.filter((d) => {
+    const day = sched[d] || {};
+    return !store.stations.some((st) => {
+      const ov = store.daySettings?.[d]?.stationOverrides?.[st.id];
+      const needed = ov !== undefined ? (ov.required ?? st.required ?? 1) : (st.required || 1);
+      return needed !== 0 && (day[st.id] || []).length > 0;
+    });
+  });
+
+  // Each page warns about its own days only — a notice about a day printed
+  // three pages earlier is noise.
+  const noticeFor = (days) => {
+    const blank = days.filter((d) => emptyDays.includes(d));
+    if (!blank.length) return '';
+    const what = blank.length === sortedDays.length
+      ? 'Rozpis na toto obdobie ešte nie je vygenerovaný'
+      : `${blank.length === 1 ? 'Deň' : 'Dni'} ${blank.map(fmtDay).join(', ')} ${blank.length === 1 ? 'nemá' : 'nemajú'} nikoho priradeného`;
+    return `<div class="gen-notice">${what} — v Rozpise klikni <strong>Generovať rozpis</strong> a exportuj znova.</div>`;
+  };
+
   let pages = '';
   let pageNum = 1;
   for (const [, days] of weekMap) {
@@ -1157,7 +1179,11 @@ function exportSchedulePrintHTML(store) {
         const needed = ov !== undefined ? (ov.required ?? station.required ?? 1) : (station.required || 1);
         if (needed === 0) return `<td class="col-empty" title="Zlúčené/zatvorené"></td>`;
         const wids = sched[d]?.[station.id] || [];
-        if (wids.length === 0) return `<td></td>`;
+        if (wids.length === 0) {
+          return emptyDays.includes(d)
+            ? `<td class="col-nogen">nevygenerované</td>`
+            : `<td></td>`;
+        }
         const parts = wids.map((id) => {
           const name = workerMap.get(id) || id;
           const color = workerColors.get(id) || nameColors.get(name) || '#F5F5F5';
@@ -1172,6 +1198,7 @@ function exportSchedulePrintHTML(store) {
     pages += `
     <div class="week-page">
       <h1 class="doc-title">FLP - ROZPIS ${monthLabel}</h1>
+      ${noticeFor(days)}
       <div class="week-header">${weekHeader}</div>
       <table><thead><tr>${colHeaders}</tr></thead><tbody>${rows}</tbody></table>
       <div class="page-footer">Strana ${pageNum}</div>
@@ -1236,6 +1263,12 @@ function exportSchedulePrintHTML(store) {
   th.col-empty { background: #3a6a9a !important; }
 
   .page-footer { text-align: center; font-size: 11px; color: #888; margin-top: 14px; }
+
+  .gen-notice {
+    background: #fdf3e0; border-left: 3px solid #f99300; color: #8a6200;
+    padding: 6px 10px; margin: 0 0 10px; font-size: 12px; border-radius: 3px;
+  }
+  .col-nogen { color: #b9772a; font-size: 11px; font-style: italic; text-align: center; }
 
   @media print {
     .no-print { display: none !important; }
