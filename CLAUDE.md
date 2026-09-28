@@ -3,6 +3,12 @@
 Plánovač zmien pre brigádnikov v zábavnom parku Fantázia Liptov.
 Komunikačný jazyk s používateľom je **slovenčina**. Vlastník: Cyril (erasko).
 
+> ⚠️ **Skôr než čokoľvek zmeníš, prečítaj si [`NADVAZNOSTI.md`](NADVAZNOSTI.md).**
+> Je tam mapa „čo s čím súvisí", kontrolný zoznam pred commitom a register už
+> vyriešených chýb. Väčšina konceptov v tejto appke je naprogramovaná na viacerých
+> miestach — oprava jedného miesta bez ostatných je najčastejší zdroj regresií.
+> **Po každom vyriešenom probléme ten súbor doplň.**
+
 - **Produkcia:** https://fantazia-shift-planner.onrender.com (Render, auto-deploy z `main`)
 - **Repozitár:** https://github.com/erasko/fantazia-shift-planner — ⚠️ **VEREJNÝ**, nikdy sem necommituj heslá, tokeny ani reálne osobné údaje
 - **Databáza:** Supabase Postgres (tabuľka `app_store`, jeden riadok `id='main'` s celým stavom v JSONB)
