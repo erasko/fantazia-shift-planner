@@ -166,6 +166,17 @@ Celý stav je jeden JSON objekt. Keď pridáš nové pole:
 
 Najnovšie hore. Keď sa niektorý vráti, nehľadaj odznova — pozri sem.
 
+### 2026-09-28 — Stiahnuté PDF rozpisu malo prázdnu stranu
+- **Symptóm:** „export rozpisu stále nefunguje" — súbor `FLP - Rozpis OKTÓBER 2026.pdf`
+  mal 998 bajtov a jednu prázdnu stranu.
+- **Príčina:** appka ani export. PDF vyrobilo **Safari cez Súbor → Exportovať do PDF**,
+  čo na macOS dáva prázdny súbor (v metadátach `/Creator (Safari)`, žiadne fonty).
+  Názov súboru bol správny, takže stránka sa vykreslila v poriadku — zlyhal až prevod.
+- **Ako to spoznať:** `strings subor.pdf | grep Creator`. Keď je tam Safari a súbor má
+  pod ~2 kB, je to táto pasca, nie chyba appky.
+- **Oprava:** na exportnej stránke je červené varovanie, že sa má použiť tlačidlo
+  (Cmd+P → Uložiť ako PDF), nie Súbor → Exportovať do PDF.
+
 ### 2026-09-28 — Export vyzeral prázdny „ako vzor"
 - **Symptóm:** export sa stiahne, ale prvá strana je prázdna ako šablóna.
 - **Príčina:** export nebol pokazený. Dni otvorené *až po* vygenerovaní rozpisu nemajú

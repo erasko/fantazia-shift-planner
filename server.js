@@ -1236,7 +1236,12 @@ function exportSchedulePrintHTML(store) {
   .no-print { display: flex; gap: 10px; padding: 14px 20px; background: #f0f4ff; border-bottom: 2px solid #1a3a6b; }
   .no-print button { padding: 8px 20px; background: #1a3a6b; color: #fff; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; font-weight: bold; }
   .no-print button:hover { background: #0c2372; }
+  .no-print { flex-wrap: wrap; }
   .no-print span { align-self: center; font-size: 13px; color: #555; }
+  .no-print .safari-warn {
+    background: #fdecea; border: 1px solid #da001c; color: #8a1520;
+    padding: 5px 10px; border-radius: 5px; font-size: 12.5px;
+  }
 
   .week-page { padding: 28px 36px 20px; page-break-after: always; }
   .week-page:last-child { page-break-after: auto; }
@@ -1282,7 +1287,8 @@ function exportSchedulePrintHTML(store) {
 <body>
 <div class="no-print">
   <button onclick="window.print()">🖨 Tlačiť / Uložiť ako PDF</button>
-  <span>V dialógu tlačiarne zvoľ "Uložiť ako PDF" · Orientácia: Na šírku (Landscape)</span>
+  <span>V dialógu zvoľ <strong>Uložiť ako PDF</strong> · Orientácia: <strong>Na šírku</strong></span>
+  <span class="safari-warn">⚠️ V Safari <strong>nepoužívaj Súbor → Exportovať do PDF</strong> — uloží prázdny súbor. Použi toto tlačidlo.</span>
 </div>
 ${pages}
 ${legendPage}
