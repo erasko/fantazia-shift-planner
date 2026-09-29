@@ -642,7 +642,17 @@ function inPeriod(store, month, date) {
 // days left behind by an earlier month; an export that takes it whole runs two
 // rosters together and titles them both after whichever came first.
 function periodDays(store, month = store.month) {
-  return (store.openDays || []).filter((d) => inPeriod(store, month, d)).sort();
+  // periodFor, not store.openDays: the flat list only ever describes the month
+  // being edited, so an archived month read from it came back with the wrong days.
+  return (periodFor(store, month).openDays || []).filter((d) => inPeriod(store, month, d)).sort();
+}
+
+// Which period an export is for. Defaults to the month being edited, but the
+// admin sets up the next month while the last one is still being paid, so the
+// hour exports have to be able to name an earlier one.
+function exportMonth(url, store) {
+  const m = url.searchParams.get('month');
+  return m && /^\d{4}-\d{2}$/.test(m) ? m : store.month;
 }
 
 function scheduledDates(store, month) {
@@ -865,11 +875,11 @@ function adminView(store) {
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
-function computeWorkerHours(store) {
-  const sched = effectiveSchedule(store);
+function computeWorkerHours(store, month = store.month) {
+  const sched = effectiveSchedule(store, month);
   const hours = new Map();
   for (const w of store.workers) hours.set(w.id, { shifts: 0, hours: 0 });
-  for (const date of scheduledDates(store, store.month)) {
+  for (const date of scheduledDates(store, month)) {
     const dayOv = store.daySettings?.[date]?.stationOverrides || {};
     for (const station of store.stations) {
       const ov = dayOv[station.id];
@@ -888,8 +898,8 @@ function computeWorkerHours(store) {
   return hours;
 }
 
-function exportHoursCSV(store) {
-  const hours = computeWorkerHours(store);
+function exportHoursCSV(store, month = store.month) {
+  const hours = computeWorkerHours(store, month);
   const lines = ['Meno,Počet zmien,Odpracované hodiny'];
   for (const w of store.workers) {
     const entry = hours.get(w.id) || { shifts: 0, hours: 0 };
@@ -899,11 +909,17 @@ function exportHoursCSV(store) {
 }
 
 // Actual reported+approved hours report (worker × day grid + discrepancy sheet)
-async function exportActualHoursXLSX(store) {
+async function exportActualHoursXLSX(store, month = store.month) {
   const wb = new ExcelJS.Workbook();
-  const logs = store.hourLogs || [];
+  // One period per file, on every sheet. This used to take the columns from
+  // the month being edited and the totals from every record ever written, so
+  // once October was set up a September export had October's empty days and a
+  // "Spolu" that summed both months.
+  const logs = (store.hourLogs || []).filter((h) => inPeriod(store, month, h.date));
   const approvedLogs = logs.filter((h) => h.status === 'approved');
-  const sortedDays = periodDays(store);
+  // Columns are the period's open days plus any day that has a record, so the
+  // day cells always add up to the total and no approved hour goes unseen.
+  const sortedDays = [...new Set([...periodDays(store, month), ...logs.map((h) => h.date)])].sort();
 
   const ws = wb.addWorksheet('Hodiny');
   const headerRow = ['Brigádnik', ...sortedDays.map((d) => d.slice(8, 10) + '.' + d.slice(5, 7) + '.'), 'Spolu'];
@@ -2144,15 +2160,17 @@ async function handleRequest(req, res) {
   if (req.method === 'GET' && p === '/api/export/hours.csv') {
     if (!requireAdmin(req, res)) return;
     const store = await getStore();
-    res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="hodiny.csv"' });
-    return res.end('﻿' + exportHoursCSV(store));
+    const month = exportMonth(url, store);
+    res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="FLP-planovane-hodiny-${month}.csv"` });
+    return res.end('﻿' + exportHoursCSV(store, month));
   }
 
   if (req.method === 'GET' && p === '/api/export/actual-hours.xlsx') {
     if (!requireAdmin(req, res)) return;
     const store = await getStore();
-    const buffer = await exportActualHoursXLSX(store);
-    res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="skutocne-hodiny.xlsx"' });
+    const month = exportMonth(url, store);
+    const buffer = await exportActualHoursXLSX(store, month);
+    res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': `attachment; filename="FLP-hodiny-${month}.xlsx"` });
     return res.end(buffer);
   }
 

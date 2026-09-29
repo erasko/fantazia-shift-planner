@@ -83,6 +83,20 @@ neboli vôbec.
 Týka sa: mesačný export hodín, `/api/export/actual-hours.xlsx`, prehľady v Agentovi,
 súčty v admin karte Hodiny.
 
+**Hodiny patria obdobiu, nie upravovanému mesiacu.** Admin pripravuje október, kým
+september ešte len vypláca — `store.month` je vtedy už október. Preto nič okolo hodín
+nesmie brať obdobie z `store.month` / `d.month`:
+
+| Kde | Ako sa vyberá obdobie |
+|---|---|
+| `server.js` → `exportMonth(url, store)` | parameter `?month=`, predvolene `store.month` |
+| `server.js` → `exportActualHoursXLSX(store, month)` | **všetky tri hárky** filtrujú `inPeriod(store, month, h.date)` |
+| `server.js` → `exportHoursCSV` / `computeWorkerHours(store, month)` | plánované hodiny zo zvoleného obdobia |
+| `public/app.js` → `selectedHoursMonth()` / `S.hoursMonth` | spoločný výber pre kartu Hodiny aj kartu Exporty |
+
+Stĺpce dní vo výkaze = dni obdobia **plus každý deň, ktorý má záznam** — inak by
+sa hodiny zarátali do „Spolu", ale nebolo by ich vidno v žiadnom dni.
+
 ---
 
 ### 3. Slepý zápis hodín — **nerozbi to**
@@ -166,6 +180,18 @@ Celý stav je jeden JSON objekt. Keď pridáš nové pole:
 
 Najnovšie hore. Keď sa niektorý vráti, nehľadaj odznova — pozri sem.
 
+### 2026-09-29 — Export hodín miešal obdobia
+- **Symptóm (zachytený skôr, než to Cyril zažil):** po prepnutí na október by výkaz
+  hodín mal októbrové (prázdne) stĺpce, ale v „Spolu" septembrové hodiny. Po prvých
+  októbrových zmenách by „Spolu" sčítalo september aj október dokopy.
+- **Príčina:** stĺpce sa brali z upravovaného mesiaca, súčty zo **všetkých záznamov
+  za celú sezónu**. Karta Hodiny mala to isté — nadpis s upravovaným mesiacom, súčty
+  za všetko. Súbor sa volal vždy `skutocne-hodiny.xlsx`, bez obdobia.
+- **Oprava:** každé obdobie samostatne (bod 2 mapy), výber obdobia v karte Hodiny
+  aj Exporty, súbor `FLP-hodiny-2026-09.xlsx`.
+- **Test:** `test/smoke.mjs` → „Export hodín — každé obdobie samostatne". Proti
+  starému kódu 4 kontroly červené.
+
 ### 2026-09-28 — Stiahnuté PDF rozpisu malo prázdnu stranu
 - **Symptóm:** „export rozpisu stále nefunguje" — súbor `FLP - Rozpis OKTÓBER 2026.pdf`
   mal 998 bajtov a jednu prázdnu stranu.
@@ -229,5 +255,9 @@ Buď o tom úprimný, nech sa naň nespolieha viac, než unesie:
 - **Mobilné zobrazenie.** Nekontroluje sa vôbec — treba pozrieť očami.
 - **Produkčné dáta.** Test beží na čistom stave. Chyby typu „staré dáta nemajú nové
   pole" odhalí až produkcia. Preto bod 8 mapy.
+- **Prekrývajúce sa obdobia.** Keby admin ručne nastavil začiatok nového obdobia na
+  deň, ktorý už patrí predchádzajúcemu, ten deň sa zaráta do oboch výkazov. Automatické
+  hranice (`monthPeriod`) sa neprekrývajú — víkend sa pripája k starému obdobiu a nové
+  začína prvým pracovným dňom — ale ručne zadané dátumy sa nekontrolujú.
 - **Súbežnosť.** Dlho otvorená admin stránka vie pri uložení prepísať novšie dáta
   (`S.schedEdits` drží starú snímku). Známe, zatiaľ neopravené.

@@ -17,6 +17,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ExcelJS from 'exceljs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = 3090 + Math.floor(Math.random() * 500);
@@ -33,6 +34,18 @@ function check(name, ok, detail = '') {
 }
 
 let cookie = '';
+async function xlsx(url) {
+  const res = await fetch(BASE + url, { headers: { Cookie: cookie } });
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(Buffer.from(await res.arrayBuffer()));
+  const ws = wb.getWorksheet('Hodiny');
+  const rows = [];
+  ws.eachRow((row) => rows.push(row.values.slice(1)));
+  const [header, ...body] = rows;
+  const people = Object.fromEntries(body.map((r) => [r[0], { days: r.slice(1, -1), total: r[r.length - 1] }]));
+  return { header, people, filename: res.headers.get('content-disposition') || '' };
+}
+
 async function api(method, url, body) {
   const res = await fetch(BASE + url, {
     method,
@@ -208,7 +221,44 @@ try {
   print = await api('GET', '/api/export/schedule-print');
   check('po opätovnom vygenerovaní hláška zmizne', !print.text.includes('<div class="gen-notice">'));
 
-  // ---------------------------------------------------------- 5. výsledok
+  // ------------------------------------------- 5. export hodín po obdobiach
+  console.log('\nExport hodín — každé obdobie samostatne');
+
+  // Deň v ďalšom kalendárnom mesiaci patrí do TOHTO obdobia (víkend je celok),
+  // takže jeho hodiny musia ísť do výkazu tohto obdobia, nie do ďalšieho.
+  const manual = await api('POST', '/api/hour-logs',
+    { personType: 'worker', personId: 'w-boris', stationId: 'st-main', date: CROSS_DAY, start: '10:00', end: '14:00' });
+  check('admin pridal hodiny na deň z ďalšieho mesiaca', manual.status === 200, manual.text.slice(0, 120));
+
+  const dd = (d) => `${d.slice(8, 10)}.${d.slice(5, 7)}.`;
+  let rep1 = await xlsx(`/api/export/actual-hours.xlsx?month=${MONTH}`);
+  check('výkaz obdobia obsahuje deň z ďalšieho mesiaca', rep1.header.includes(dd(CROSS_DAY)), rep1.header.join(' '));
+  check('výkaz obdobia: Anna 9 h, Boris 4 h',
+    rep1.people.Anna?.total === 9 && rep1.people.Boris?.total === 4, JSON.stringify(rep1.people));
+  check('stĺpce dní sa sčítajú do „Spolu"',
+    Object.values(rep1.people).every((p) => p.days.reduce((a, b) => a + (Number(b) || 0), 0) === p.total));
+  check('názov súboru nesie obdobie', rep1.filename.includes(MONTH), rep1.filename);
+
+  // Presne to, čo spraví admin: prepne sa na ďalší mesiac, aby ho pripravil.
+  const NEXT = CROSS_DAY.slice(0, 7);
+  const dayAfterCross = iso(new Date(firstOfNext.getFullYear(), firstOfNext.getMonth(), 2));
+  await api('PUT', '/api/config', { month: NEXT });
+  await api('PUT', '/api/config', { periodStart: dayAfterCross, openDays: [dayAfterCross] });
+
+  const repNext = await xlsx('/api/export/actual-hours.xlsx');
+  check('nové obdobie začína prázdne — žiadne hodiny z minulého',
+    Object.keys(repNext.people).length === 0, JSON.stringify(repNext.people));
+
+  const repOld = await xlsx(`/api/export/actual-hours.xlsx?month=${MONTH}`);
+  check('po prepnutí na nový mesiac je výkaz starého obdobia nezmenený',
+    JSON.stringify(repOld.people) === JSON.stringify(rep1.people) && repOld.header.join() === rep1.header.join(),
+    JSON.stringify(repOld.people));
+
+  const planned = await api('GET', `/api/export/hours.csv?month=${MONTH}`);
+  const annaPlanned = planned.text.split('\n').find((l) => l.startsWith('"Anna"'));
+  check('plánované hodiny starého obdobia ostanú dostupné', !!annaPlanned && !annaPlanned.startsWith('"Anna",0,'), annaPlanned);
+
+  // ---------------------------------------------------------- 6. výsledok
   console.log('\n' + '─'.repeat(50));
   if (failures.length) {
     console.log(`${passed} v poriadku, ${failures.length} CHÝB:\n`);

@@ -50,6 +50,7 @@
     openSettings: new Set(),  // settings sections the admin has open (persisted)
     openDayMonths: null,     // month groups open in the per-day times table
     openHourMonths: null,    // month groups open in the admin hour-log detail
+    hoursMonth: null,        // period the hour summary and hour exports are for
     openMonths: new Set(),   // schedule month groups the admin/operator has opened
     opTab: 'dnes',
     msgType: 'availability',
@@ -1090,7 +1091,7 @@
       case 'skupiny':     el.innerHTML = buildSkupiny();     attachSkupiny();     break;
       case 'hodiny':      el.innerHTML = buildAdminHours();  attachAdminHours();  break;
       case 'requests':    el.innerHTML = buildRequests();    attachRequests();    break;
-      case 'exports':     el.innerHTML = buildExports();                          break;
+      case 'exports':     el.innerHTML = buildExports();     attachExports();     break;
       case 'agent':       el.innerHTML = buildAgent();       attachAgent();       break;
     }
   }
@@ -1261,6 +1262,31 @@
   function monthLabel(ym) {
     const [y, m] = ym.split('-').map(Number);
     return `${MONTH_NAMES[m - 1]} ${y}`;
+  }
+
+  // Periods hours can be reported for, newest first. The month being edited is
+  // usually the NEXT one, while the last one is still being paid — so hours
+  // are never tied to d.month, they are picked explicitly.
+  function hourPeriods() {
+    const d = S.data || {};
+    const set = new Set([d.month, ...(d.publishedMonths || []), ...Object.keys(d.periods || {})]);
+    for (const h of d.hourLogs || []) set.add(periodOfDate(h.date));
+    return [...set].filter(Boolean).sort().reverse();
+  }
+
+  // Default: the newest period that has any hours in it, else the edited one.
+  function selectedHoursMonth() {
+    const d = S.data || {};
+    const periods = hourPeriods();
+    if (S.hoursMonth && periods.includes(S.hoursMonth)) return S.hoursMonth;
+    const withLogs = [...new Set((d.hourLogs || []).map(h => periodOfDate(h.date)))].sort().reverse();
+    return withLogs[0] || d.month;
+  }
+
+  function hoursMonthSelect(id, sel) {
+    return `<select id="${id}" class="hours-month-select">
+      ${hourPeriods().map(m => `<option value="${esc(m)}"${m === sel ? ' selected' : ''}>${esc(monthLabel(m))}</option>`).join('')}
+    </select>`;
   }
 
   // Open days run in one flat list, and switching months can leave the previous
@@ -2376,6 +2402,15 @@
   }
 
   // ─── EXPORTS TAB ──────────────────────────────────────────────────────────
+  function attachExports() {
+    document.getElementById('exp-hours-month')?.addEventListener('change', (e) => {
+      S.hoursMonth = e.target.value;
+      const q = `?month=${encodeURIComponent(S.hoursMonth)}`;
+      document.getElementById('exp-hours-planned').href = '/api/export/hours.csv' + q;
+      document.getElementById('exp-hours-actual').href = '/api/export/actual-hours.xlsx' + q;
+    });
+  }
+
   function buildExports() {
     return `
       <div class="card">
@@ -2386,8 +2421,12 @@
           <a href="/api/export/schedule.xlsx" class="btn btn-primary">⬇ Rozpis (Excel .xlsx)</a>
           <a href="/api/export/schedule.csv" class="btn btn-secondary">⬇ Rozpis (.csv)</a>
           <a href="/api/export/submissions.csv" class="btn btn-secondary">⬇ Odpovede brigádnikov (.csv)</a>
-          <a href="/api/export/hours.csv" class="btn btn-secondary">⬇ Plánované hodiny podľa rozpisu (.csv)</a>
-          <a href="/api/export/actual-hours.xlsx" class="btn btn-secondary">⬇ Skutočné odpracované hodiny + rozpory (Excel .xlsx)</a>
+          <div class="form-group" style="margin:8px 0 0">
+            <label>Hodiny za obdobie</label>
+            ${hoursMonthSelect('exp-hours-month', selectedHoursMonth())}
+          </div>
+          <a id="exp-hours-planned" href="/api/export/hours.csv?month=${encodeURIComponent(selectedHoursMonth())}" class="btn btn-secondary">⬇ Plánované hodiny podľa rozpisu (.csv)</a>
+          <a id="exp-hours-actual" href="/api/export/actual-hours.xlsx?month=${encodeURIComponent(selectedHoursMonth())}" class="btn btn-secondary">⬇ Skutočné odpracované hodiny + rozpory (Excel .xlsx)</a>
           <a href="/api/export/backup.json" class="btn btn-secondary">⬇ Záloha všetkých dát (.json)</a>
         </div>
       </div>`;
@@ -2499,9 +2538,15 @@
       return `<div class="card"><p class="text-muted">Zatiaľ neboli nahlásené žiadne odpracované hodiny.</p></div>`;
     }
 
+    // The summary is for ONE period — it used to add up the whole season and
+    // label the result with the month being edited.
+    const sel = selectedHoursMonth();
+    const plogs = logs.filter(h => periodOfDate(h.date) === sel);
+    const pendingElsewhere = logs.filter(h => h.status === 'pending' && periodOfDate(h.date) !== sel).length;
+
     // Per-worker approved totals
     const totals = new Map();
-    for (const h of logs) {
+    for (const h of plogs) {
       if (h.status !== 'approved') continue;
       const hrs = hoursFromRange(h.approvedStart, h.approvedEnd);
       const cur = totals.get(h.workerName) || { shifts: 0, hours: 0 };
@@ -2513,10 +2558,10 @@
       .map(([name, v]) => `<tr><td>${esc(name)}</td><td>${v.shifts}</td><td><strong>${v.hours.toFixed(1)} h</strong></td></tr>`)
       .join('');
 
-    const discrepancies = logs.filter(h =>
+    const discrepancies = plogs.filter(h =>
       h.status === 'approved' && (h.reportedStart !== h.approvedStart || h.reportedEnd !== h.approvedEnd)
     );
-    const pending = logs.filter(h => h.status === 'pending');
+    const pending = plogs.filter(h => h.status === 'pending');
 
     // Records pile up all season and it is nearly always the current month you
     // want, so the detail folds by month with that one open.
@@ -2598,18 +2643,23 @@
 
     return `
       <div class="card">
-        <div class="section-title">Súhrn schválených hodín &mdash; ${esc(d.month)}</div>
+        <div class="section-title">Súhrn schválených hodín &mdash; ${esc(monthLabel(sel))}</div>
+        <div class="form-group" style="max-width:240px;margin-bottom:12px">
+          <label>Obdobie</label>
+          ${hoursMonthSelect('hours-month', sel)}
+        </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
           ${pending.length ? `<span class="badge badge-warning">⏳ ${pending.length} čaká na schválenie</span>` : ''}
+          ${pendingElsewhere ? `<span class="badge badge-info">⏳ ${pendingElsewhere} čaká v inom období</span>` : ''}
           ${discrepancies.length ? `<span class="badge badge-danger">⚠ ${discrepancies.length} nezhôd</span>` : '<span class="badge badge-success">✓ Žiadne nezhody</span>'}
         </div>
         ${totalRows
           ? `<div style="overflow-x:auto"><table class="stack-titled" style="width:auto">
               <thead><tr><th>Brigádnik</th><th>Zmeny</th><th>Schválené hodiny</th></tr></thead>
               <tbody>${totalRows}</tbody></table></div>`
-          : '<p class="text-muted">Zatiaľ nič schválené.</p>'}
+          : '<p class="text-muted">Za toto obdobie zatiaľ nič schválené.</p>'}
         <div class="actions">
-          <a href="/api/export/actual-hours.xlsx" class="btn btn-primary">⬇ Exportovať mesačný výkaz (Excel)</a>
+          <a href="/api/export/actual-hours.xlsx?month=${encodeURIComponent(sel)}" class="btn btn-primary">⬇ Exportovať výkaz — ${esc(monthLabel(sel))} (Excel)</a>
         </div>
       </div>
 
@@ -2743,6 +2793,11 @@
         setMsg('nh-msg', `<div class="alert alert-error">${esc(e.message)}</div>`);
         btn.disabled = false;
       }
+    });
+
+    document.getElementById('hours-month')?.addEventListener('change', (e) => {
+      S.hoursMonth = e.target.value;
+      renderPanel();
     });
 
     document.querySelectorAll('.hour-head[data-hourmonth]').forEach(head => {
