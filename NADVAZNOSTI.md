@@ -191,6 +191,11 @@ Najnovšie hore. Keď sa niektorý vráti, nehľadaj odznova — pozri sem.
   aj Exporty, súbor `FLP-hodiny-2026-09.xlsx`.
 - **Test:** `test/smoke.mjs` → „Export hodín — každé obdobie samostatne". Proti
   starému kódu 4 kontroly červené.
+- **Ako rozpoznať starý súbor:** `skutocne-hodiny.xlsx` = stará verzia (stĺpce z
+  upravovaného mesiaca, dni prázdne, vyplnené len „Spolu"). Nová verzia sa volá
+  `FLP-hodiny-RRRR-MM.xlsx`. Cyril raz stiahol starý o minútu a pol pred nasadením —
+  keď hlási „len celkový počet", najprv pozri názov a čas stiahnutia (`stat`) oproti
+  `startedAt` v `/api/health`.
 
 ### 2026-09-28 — Stiahnuté PDF rozpisu malo prázdnu stranu
 - **Symptóm:** „export rozpisu stále nefunguje" — súbor `FLP - Rozpis OKTÓBER 2026.pdf`
