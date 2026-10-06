@@ -70,6 +70,24 @@ s októbrom do jedného rozpisu. Rozhoduj podľa **rozsahu dátumov** obdobia.
 
 Keď meníš jedno, prejdi všetkých päť.
 
+**Prepnutie mesiaca má dve cesty a musia robiť to isté:**
+
+| Cesta | Čo posiela |
+|---|---|
+| tlačidlá mesiacov hore v Nastaveniach (`.month-jump`) | len `{ month }` |
+| pole *Mesiac* + **Uložiť nastavenia** (`#save-cfg`) | **celý formulár** — vrátane otvorených dní a dátumov *starého* mesiaca |
+
+Druhá cesta kedysi zapísala dni starého mesiaca do nového. **To bol skutočný zdroj
+„N otvorených dní je mimo tohto obdobia"** — tlačidlo *Odstrániť* liečilo len príznak.
+Server (`PUT /api/config`) preto pri prepnutí ignoruje `openDays` z formulára a dátumy
+berie len vtedy, keď `periodStart` patrí novému mesiacu.
+
+**Názov mesiaca musí byť `RRRR-MM`** (`validMonth`, `MONTH_RE`). Je to kľúč, pod ktorým
+sa ukladá obdobie, rozpis, ručné úpravy, zverejnenie aj dostupnosť. Preklep sa kedysi
+prijal a vzniklo samostatné obdobie (`2026-111` → `monthPeriod` z neho spravil marec 2035).
+Keď sa aktuálny mesiac s neplatným názvom prepíše na platný, ktorý ešte neexistuje,
+je to **oprava preklepu** (`renameMonth`) — všetko sa presunie, nič sa nearchivuje.
+
 ---
 
 ### 2. „Kto všetko má hodiny?"
@@ -179,6 +197,25 @@ Celý stav je jeden JSON objekt. Keď pridáš nové pole:
 ## Register vyriešených problémov
 
 Najnovšie hore. Keď sa niektorý vráti, nehľadaj odznova — pozri sem.
+
+### 2026-10-06 — „28 otvorených dní je mimo tohto obdobia" + mesiac „2026-111"
+- **Symptóm:** po zadaní nového obdobia žltá hláška s dňami zo septembra a októbra;
+  v hlavičke „Admin — 2026-111".
+- **Príčina 1 (hláška):** pole *Mesiac* + *Uložiť nastavenia* posielalo celý formulár,
+  takže otvorené dni starého mesiaca sa zapísali do nového. Pri prechode sept → okt
+  sa to stalo tiež, preto boli v zozname dni oboch mesiacov. Všetky predošlé
+  „zvyšky po prepnutí mesiaca" mali túto príčinu.
+- **Príčina 2 (2026-111):** pole *Mesiac* prijalo čokoľvek. Ani mazanie obdobia
+  (`DELETE /api/periods/…`) ho nevedelo zmazať, lebo prijímalo len `\d{4}-\d{2}`.
+- **Oprava:** bod 1 mapy — prepnutie cez formulár neprenáša dni ani dátumy,
+  neplatný mesiac sa odmietne (server aj klient), preklep sa dá opraviť prepísaním
+  na správny mesiac (`renameMonth`), pokazené obdobie sa dá zmazať.
+- **Test:** sekcie „Prepnutie mesiaca cez formulár" a „Preklep v mesiaci"; proti
+  starému kódu 7 kontrol červených. Test vie reštartovať server s upraveným
+  `store.json` (`withStoreFile`) — tak sa simuluje stav, ktorý cez API už vzniknúť nemôže.
+- **Poznámka:** archív októbra si zvyšky septembra ponechal (vznikli ešte pred
+  opravou). Sú neškodné — `inPeriod` ich všade odfiltruje — a pri návrate na október
+  ich odstráni tlačidlo *Odstrániť … dní mimo obdobia*.
 
 ### 2026-09-29 — Export hodín miešal obdobia
 - **Symptóm (zachytený skôr, než to Cyril zažil):** po prepnutí na október by výkaz

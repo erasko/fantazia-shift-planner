@@ -1260,8 +1260,9 @@
                        'júl','august','september','október','november','december'];
 
   function monthLabel(ym) {
-    const [y, m] = ym.split('-').map(Number);
-    return `${MONTH_NAMES[m - 1]} ${y}`;
+    const [y, m] = String(ym || '').split('-').map(Number);
+    // A malformed key (a typo like "2026-111") shows as itself, not "undefined 2026".
+    return MONTH_NAMES[m - 1] ? `${MONTH_NAMES[m - 1]} ${y}` : String(ym || '');
   }
 
   // Periods hours can be reported for, newest first. The month being edited is
@@ -1858,6 +1859,13 @@
     // Save
     document.getElementById('save-cfg')?.addEventListener('click', async () => {
       const btn = document.getElementById('save-cfg');
+      // Caught here so a typo never reaches the server; the server refuses it too.
+      const monthIn = document.getElementById('cfg-month')?.value?.trim();
+      if (monthIn && !/^\d{4}-(0[1-9]|1[0-2])$/.test(monthIn)) {
+        setMsg('set-msg', `<div class="alert alert-error">Mesiac „${esc(monthIn)}" nie je platný — zadaj ho v tvare <strong>RRRR-MM</strong>, napr. 2026-11.</div>`);
+        document.getElementById('cfg-month')?.focus();
+        return;
+      }
       btn.disabled = true; btn.textContent = 'Ukladám...';
 
       // Read stations from DOM

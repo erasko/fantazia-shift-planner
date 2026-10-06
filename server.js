@@ -271,6 +271,26 @@ function activateMonth(store, month) {
   store.schedulePublished = isMonthPublished(store, month);
 }
 
+// A month key is the name every period, roster and submission is filed under.
+// A typo such as "2026-111" used to be accepted and became a period of its own.
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+const validMonth = (m) => MONTH_RE.test(String(m || ''));
+
+// Corrects a mistyped month key in place. Everything filed under the bad key
+// moves to the good one — availability workers already sent included — so
+// fixing the typo loses nothing and leaves no orphan period behind.
+function renameMonth(store, from, to) {
+  for (const key of ['periods', 'schedule', 'manualAssignments']) {
+    if (store[key]?.[from] !== undefined) {
+      store[key][to] = store[key][from];
+      delete store[key][from];
+    }
+  }
+  store.publishedMonths = (store.publishedMonths || []).map((m) => (m === from ? to : m));
+  for (const sub of store.submissions || []) if (sub.month === from) sub.month = to;
+  store.month = to;
+}
+
 function isMonthPublished(store, month) {
   return (store.publishedMonths || []).includes(month);
 }
@@ -652,7 +672,7 @@ function periodDays(store, month = store.month) {
 // hour exports have to be able to name an earlier one.
 function exportMonth(url, store) {
   const m = url.searchParams.get('month');
-  return m && /^\d{4}-\d{2}$/.test(m) ? m : store.month;
+  return m && validMonth(m) ? m : store.month;
 }
 
 function scheduledDates(store, month) {
@@ -1771,19 +1791,44 @@ async function handleRequest(req, res) {
   if (req.method === 'PUT' && p === '/api/config') {
     if (!requireAdmin(req, res)) return;
     const body = await parseBody(req);
+    if (body.month !== undefined) body.month = String(body.month).trim();
+    if (body.month !== undefined && !validMonth(body.month)) {
+      return respond(res, 400, { error: `Mesiac „${body.month}" nie je platný. Zadaj ho v tvare RRRR-MM, napr. 2026-11.` });
+    }
     await mutateStore((s) => {
-      // Switching months archives the current one and restores the target's
-      // own dates — it no longer wipes the period or unpublishes anything.
+      let switching = false;
+      const prev = { periodStart: s.periodStart, periodEnd: s.periodEnd, availabilityDeadline: s.availabilityDeadline };
       if (body.month !== undefined && body.month !== s.month) {
-        activateMonth(s, body.month);
+        const target = body.month;
+        const targetExists = Boolean(s.periods?.[target] || s.schedule?.[target]
+          || (s.publishedMonths || []).includes(target));
+        if (!validMonth(s.month) && !targetExists) {
+          // Correcting a typo, not moving to another month: same period, same
+          // days, so the rest of the form applies as an ordinary save.
+          renameMonth(s, s.month, target);
+        } else {
+          // Switching months archives the current one and restores the target's
+          // own dates — it no longer wipes the period or unpublishes anything.
+          activateMonth(s, target);
+          switching = true;
+        }
       }
 
-      if (body.periodStart !== undefined) s.periodStart = body.periodStart;
-      if (body.periodEnd !== undefined) s.periodEnd = body.periodEnd;
-      if (body.availabilityDeadline !== undefined) s.availabilityDeadline = body.availabilityDeadline;
+      // The settings form always sends the whole page, and on a month switch
+      // that page still showed the OLD month: its open days and, unless the
+      // admin retyped them, its dates. Writing those over the month just
+      // activated is what carried a month's open days into the next one,
+      // again and again — the "N dní mimo obdobia" leftovers.
+      const datesForTarget = !switching || String(body.periodStart || '').startsWith(s.month);
+      if (body.periodStart !== undefined && datesForTarget) s.periodStart = body.periodStart;
+      if (body.periodEnd !== undefined && datesForTarget) s.periodEnd = body.periodEnd;
+      if (body.availabilityDeadline !== undefined
+        && !(switching && body.availabilityDeadline === prev.availabilityDeadline)) {
+        s.availabilityDeadline = body.availabilityDeadline;
+      }
       if (body.defaultOpensAt !== undefined) s.defaultOpensAt = body.defaultOpensAt;
       if (body.defaultClosesAt !== undefined) s.defaultClosesAt = body.defaultClosesAt;
-      if (Array.isArray(body.openDays)) s.openDays = body.openDays;
+      if (Array.isArray(body.openDays) && !switching) s.openDays = body.openDays;
       if (body.daySettings !== undefined) s.daySettings = body.daySettings;
       snapshotCurrentPeriod(s);
 
@@ -1959,10 +2004,12 @@ async function handleRequest(req, res) {
   // and emptying it underneath the open editor invites exactly the kind of
   // mismatch this was added to clean up. Availability submissions and hour
   // logs are records of what people did and are left alone.
-  const delPeriodM = p.match(/^\/api\/periods\/(\d{4}-\d{2})$/);
+  // Any key, not just a well-formed one: a mistyped month is exactly the
+  // period someone needs to be able to get rid of.
+  const delPeriodM = p.match(/^\/api\/periods\/([^/]+)$/);
   if (delPeriodM && req.method === 'DELETE') {
     if (!requireAdmin(req, res)) return;
-    const month = delPeriodM[1];
+    const month = decodeURIComponent(delPeriodM[1]);
     const store = await getStore();
     if (month === store.month) {
       return respond(res, 400, {

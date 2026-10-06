@@ -13,7 +13,7 @@
 // tu prejde — preto je v kontrolnom zozname aj krok „preklikaj to".
 
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,13 +87,33 @@ const EXTRA_DAY = (() => {
 
 // ------------------------------------------------------------------ štart
 
-const server = spawn('node', [path.join(root, 'server.js')], {
-  env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, ADMIN_PASSWORD: PASSWORD, DATABASE_URL: '' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
+let server;
 let serverLog = '';
-server.stdout.on('data', (d) => { serverLog += d; });
-server.stderr.on('data', (d) => { serverLog += d; });
+function startServer() {
+  server = spawn('node', [path.join(root, 'server.js')], {
+    env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, ADMIN_PASSWORD: PASSWORD, DATABASE_URL: '' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  server.stdout.on('data', (d) => { serverLog += d; });
+  server.stderr.on('data', (d) => { serverLog += d; });
+}
+startServer();
+
+// Server drží stav v pamäti. Na nasimulovanie dát, ktoré cez API už vzniknúť
+// nemôžu (napr. preklep v mesiaci spred opravy), ho zastavíme, upravíme súbor
+// a spustíme znova.
+async function withStoreFile(edit) {
+  server.kill();
+  await new Promise((r) => server.once('exit', r));
+  const file = path.join(dataDir, 'store.json');
+  const store = JSON.parse(readFileSync(file, 'utf8'));
+  edit(store);
+  writeFileSync(file, JSON.stringify(store));
+  startServer();
+  if (!await waitForServer()) throw new Error('Server sa po reštarte nespustil');
+  cookie = '';
+  await api('POST', '/api/login', { password: PASSWORD });
+}
 
 async function waitForServer() {
   for (let i = 0; i < 50; i++) {
@@ -258,7 +278,75 @@ try {
   const annaPlanned = planned.text.split('\n').find((l) => l.startsWith('"Anna"'));
   check('plánované hodiny starého obdobia ostanú dostupné', !!annaPlanned && !annaPlanned.startsWith('"Anna",0,'), annaPlanned);
 
-  // ---------------------------------------------------------- 6. výsledok
+  // ------------------------------------- 6. prepnutie mesiaca cez formulár
+  console.log('\nPrepnutie mesiaca cez formulár Nastavení');
+
+  // Formulár posiela vždy celú stránku — a pri prepnutí mesiaca na nej ešte
+  // boli otvorené dni a dátumy STARÉHO mesiaca. Tie sa kedysi zapísali do
+  // nového mesiaca: odtiaľ hláška „N otvorených dní je mimo tohto obdobia".
+  admin = await api('GET', '/api/admin');
+  const before = { month: admin.json.month, start: admin.json.periodStart, days: admin.json.openDays };
+  const [ny, nm] = before.month.split('-').map(Number);
+  const NEXT2 = iso(new Date(ny, nm, 1)).slice(0, 7);
+  await api('PUT', '/api/config', {
+    month: NEXT2, periodStart: before.start, periodEnd: admin.json.periodEnd, openDays: before.days,
+  });
+  admin = await api('GET', '/api/admin');
+  check('nový mesiac nezdedí otvorené dni starého', admin.json.month === NEXT2 && admin.json.openDays.length === 0,
+    `mesiac ${admin.json.month}, dni: ${admin.json.openDays.join(', ')}`);
+  check('nový mesiac nezdedí dátumy starého', String(admin.json.periodStart).startsWith(NEXT2),
+    `začiatok ${admin.json.periodStart}`);
+  check('starý mesiac si svoje dni ponechal',
+    JSON.stringify([...(admin.json.periods?.[before.month]?.openDays || [])].sort()) === JSON.stringify([...before.days].sort()));
+
+  // Keď admin pri prepnutí rovno napíše dátumy nového mesiaca, platia.
+  const NEXT3 = iso(new Date(ny, nm + 1, 1)).slice(0, 7);
+  await api('PUT', '/api/config', { month: NEXT3, periodStart: `${NEXT3}-03`, periodEnd: `${NEXT3}-27` });
+  admin = await api('GET', '/api/admin');
+  check('dátumy napísané pre nový mesiac sa uložia',
+    admin.json.periodStart === `${NEXT3}-03` && admin.json.periodEnd === `${NEXT3}-27`,
+    `${admin.json.periodStart} – ${admin.json.periodEnd}`);
+
+  // ----------------------------------------------- 7. preklep v mesiaci
+  console.log('\nPreklep v mesiaci (napr. 2026-111)');
+
+  const bad = await api('PUT', '/api/config', { month: '2026-111' });
+  check('neplatný mesiac sa odmietne', bad.status === 400, `${bad.status} ${bad.text.slice(0, 80)}`);
+  admin = await api('GET', '/api/admin');
+  check('po odmietnutí sa nič nezmenilo', admin.json.month === NEXT3, admin.json.month);
+
+  // Stav, ktorý v produkcii vznikol ešte pred touto opravou: aktuálny mesiac
+  // má neplatný názov a brigádnik naň už stihol odoslať dostupnosť.
+  const TYPO = `${NEXT3.slice(0, 4)}-1${NEXT3.slice(5)}`;
+  await withStoreFile((st) => {
+    st.periods[TYPO] = { ...st.periods[NEXT3] };
+    delete st.periods[NEXT3];
+    st.month = TYPO;
+    st.submissions.push({ id: 'sub-typo', workerId: 'w-anna', workerName: 'Anna', month: TYPO,
+      unavailableDays: [`${NEXT3}-10`], submittedAt: new Date().toISOString() });
+  });
+  await api('PUT', '/api/config', {
+    month: NEXT3, periodStart: `${NEXT3}-03`, periodEnd: `${NEXT3}-27`, openDays: [`${NEXT3}-10`, `${NEXT3}-11`],
+  });
+  admin = await api('GET', '/api/admin');
+  check('oprava preklepu prepne na správny mesiac', admin.json.month === NEXT3, admin.json.month);
+  check('oprava preklepu nenechá pokazené obdobie', !admin.json.periods?.[TYPO],
+    Object.keys(admin.json.periods || {}).join(', '));
+  check('oprava preklepu zachová dátumy a otvorené dni',
+    admin.json.periodStart === `${NEXT3}-03` && admin.json.openDays.join() === `${NEXT3}-10,${NEXT3}-11`,
+    `${admin.json.periodStart}, dni ${admin.json.openDays.join(', ')}`);
+  check('dostupnosť odoslaná pod preklepom sa presunie',
+    (admin.json.submissions || []).find((x) => x.id === 'sub-typo')?.month === NEXT3);
+
+  // A keď sa admin z preklepu prepol inam (napr. kliknutím na iný mesiac),
+  // pokazené obdobie ostane v archíve — musí sa dať zmazať.
+  await withStoreFile((st) => { st.periods[TYPO] = { periodStart: '', periodEnd: '', openDays: [] }; });
+  const del = await api('DELETE', `/api/periods/${TYPO}`);
+  admin = await api('GET', '/api/admin');
+  check('obdobie s pokazeným názvom sa dá zmazať', del.status === 200 && !admin.json.periods?.[TYPO],
+    `${del.status} ${del.text.slice(0, 80)}`);
+
+  // ---------------------------------------------------------- 8. výsledok
   console.log('\n' + '─'.repeat(50));
   if (failures.length) {
     console.log(`${passed} v poriadku, ${failures.length} CHÝB:\n`);
